@@ -288,3 +288,12 @@ export function resizeMany(starts, h, dWorld, opts = {}, box = bbox(starts)) {
   const v = resizeNode(virtualNode(), h, dWorld, { ...opts, keepOnPlane: false }, box);
   return { nodes: applyVirtual(starts, v), virtual: v };
 }
+
+/** Snap an angle (deg) the Tinkercad way: 22.5° steps, 45° with Shift, free (1°) when snapping is off. */
+export function snapAngle(deg, { shift = false, free = false } = {}) { const st = free ? 1 : shift ? 45 : 22.5; return Math.round(deg / st) * st; }
+/** Rotate nodes (captured at drag start) by deg about a world axis through a world centre. */
+export function rotateAbout(starts, center, axis, deg) {
+  const c = new THREE.Vector3(...center), a = new THREE.Vector3(...axis).normalize();
+  const R = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z).multiply(new THREE.Matrix4().makeRotationAxis(a, THREE.MathUtils.degToRad(deg))).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+  return starts.map(n => { const o = structuredClone(n); setNodeMatrix(o, R.clone().multiply(nodeMatrix(n))); return o; });
+}

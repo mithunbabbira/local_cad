@@ -86,4 +86,12 @@ t('multi-select resize scales the group box and keeps the far side anchored', ()
 t('multi-select uniform resize with Shift', () => {
   const a = C.makeNode('box'), b = C.makeNode('sphere'); b.pos = [30, 0, 0];
   const { nodes } = C.resizeMany([a, b], [1, 1, 0], [50, 0, 0], { uniform: true }); const s = C.bbox(nodes).getSize(new (C.THREE.Vector3)()); near(s.x, 100); near(s.z, 40); near(C.bbox(nodes).min.z, 0); });
+t('angle snapping 22.5 / 45 / free', () => { assert.equal(C.snapAngle(30), 22.5); assert.equal(C.snapAngle(34), 45); assert.equal(C.snapAngle(30, { shift: true }), 45); assert.equal(C.snapAngle(30.4, { free: true }), 30); });
+t('rotateAbout keeps the centre fixed and rotates about the axis', () => {
+  const b = C.makeNode('box', { params: { w: 40, d: 10, h: 10 } }); const c = C.bbox([b]).getCenter(new (C.THREE.Vector3)());
+  const [r] = C.rotateAbout([b], c.toArray(), [0, 0, 1], 90); near(r.rot[2], 90); const bb = C.bbox([r]); const s = bb.getSize(new (C.THREE.Vector3)());
+  near(s.x, 10); near(s.y, 40); const c2 = bb.getCenter(new (C.THREE.Vector3)()); near(c2.x, c.x); near(c2.y, c.y); near(c2.z, c.z); });
+t('rotateAbout on several nodes rotates them as one', () => {
+  const a = C.makeNode('box'), b = C.makeNode('box'); b.pos = [40, 0, 0];
+  const out = C.rotateAbout([a, b], [20, 0, 10], [0, 0, 1], 180); near(out[0].pos[0], 40); near(out[1].pos[0], 0); });
 console.log(`\n${pass} tests passed`);

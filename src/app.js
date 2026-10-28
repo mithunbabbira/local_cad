@@ -258,10 +258,16 @@ const hMat = { corner: new THREE.MeshBasicMaterial({ color: '#ffffff', depthTest
 const HANDLES = [
   ...[[1, 1], [1, -1], [-1, 1], [-1, -1]].map(([x, y]) => ({ kind: 'corner', h: [x, y, 0], at: [x, y, -1] })),
   ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([x, y]) => ({ kind: 'side', h: [x, y, 0], at: [x, y, -1] })),
-  { kind: 'top', h: [0, 0, 1], at: [0, 0, 1] }, { kind: 'lift', h: [0, 0, 0], at: [0, 0, 1] }];
+  { kind: 'top', h: [0, 0, 1], at: [0, 0, 1] }, { kind: 'lift', h: [0, 0, 0], at: [0, 0, 1] },
+  ...[0, 1, 2].map(axis => ({ kind: 'rot', axis, h: [0, 0, 0] }))];
 const outline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineDashedMaterial({ color: '#1e6fd9', dashSize: 1.5, gapSize: 1, depthTest: false }));
 hGroup.add(outline);
 for (const H of HANDLES) {
+  if (H.kind === 'rot') { // curved rotation arrow: quarter-torus + arrowhead
+    const g = new THREE.Group(); const arc = new THREE.Mesh(new THREE.TorusGeometry(1, 0.035, 6, 32, Math.PI / 2), new THREE.MeshBasicMaterial({ color: '#2b2f36', depthTest: false })); arc.renderOrder = 11;
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.2, 12), arc.material); tip.position.set(0, 1, 0); tip.rotation.z = Math.PI / 2; tip.renderOrder = 11;
+    const tip2 = tip.clone(); tip2.position.set(1, 0, 0); tip2.rotation.z = Math.PI; g.add(arc, tip, tip2); arc.userData.handle = H; tip.userData.handle = H; tip2.userData.handle = H;
+    H.mesh = g; H.pick = [arc, tip, tip2]; hGroup.add(g); continue; }
   const geo = H.kind === 'lift' ? new THREE.ConeGeometry(0.6, 1.4, 16).rotateX(Math.PI / 2) : H.kind === 'side' ? new THREE.BoxGeometry(0.9, 0.9, 0.9) : new THREE.BoxGeometry(1.1, 1.1, 1.1);
   H.mesh = new THREE.Mesh(geo, hMat[H.kind]); H.mesh.userData.handle = H; H.mesh.renderOrder = 11;
   if (H.kind !== 'lift' && H.kind !== 'side') { const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: '#333', depthTest: false })); H.mesh.add(e); }
@@ -281,15 +287,17 @@ function updateHandles() {
   const c = hBox.getCenter(new THREE.Vector3()), sz = hBox.getSize(new THREE.Vector3());
   outline.matrixAutoUpdate = false; outline.matrix.copy(m.clone().multiply(new THREE.Matrix4().compose(c, new THREE.Quaternion(), sz)));
   const top = C.handlePoint(hTarget, [0, 0, 1], hBox);
+  const sizeW = C.localSize(hTarget, hBox), ctr = C.handlePoint(hTarget, [0, 0, 0], hBox);
   for (const H of HANDLES) {
+    if (H.kind === 'rot') { placeRotArrow(H, q, ctr, sizeW); continue; }
     H.mesh.quaternion.copy(q);
     if (H.kind === 'lift') { H.mesh.position.copy(top).add(new THREE.Vector3(0, 0, 1).applyQuaternion(q).multiplyScalar(H.mesh.scale.x * 4 + 4)); }
     else H.mesh.position.copy(C.handlePoint(hTarget, H.at, hBox));
   }
   updateLabels();
 }
-function tickHandles() { if (!hGroup.visible) return; for (const H of HANDLES) { const d = camera.position.distanceTo(H.mesh.position); H.mesh.scale.setScalar(d * 0.008); }
-  if (hTarget) { const top = C.handlePoint(hTarget, [0, 0, 1], hBox); const L = HANDLES[9]; L.mesh.position.copy(top).add(new THREE.Vector3(0, 0, 1).applyQuaternion(C.nodeQuat(hTarget)).multiplyScalar(L.mesh.scale.x * 2.5 + 2)); }
+function tickHandles() { if (!hGroup.visible) return; for (const H of HANDLES) { if (H.kind === 'rot') continue; const d = camera.position.distanceTo(H.mesh.position); H.mesh.scale.setScalar(d * 0.008); }
+  if (hTarget) { const top = C.handlePoint(hTarget, [0, 0, 1], hBox); const L = HANDLES.find(x => x.kind === 'lift'); L.mesh.position.copy(top).add(new THREE.Vector3(0, 0, 1).applyQuaternion(C.nodeQuat(hTarget)).multiplyScalar(L.mesh.scale.x * 2.5 + 2)); }
   updateLabels(); }
 function toScreen(v) { const p = v.clone().project(camera); const r = renderer.domElement.getBoundingClientRect(); return [(p.x + 1) / 2 * r.width, (1 - p.y) / 2 * r.height, p.z]; }
 function updateLabels() {
@@ -320,6 +328,37 @@ function editLabel(L) {
   inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
   inp.addEventListener('blur', () => done(true));
 }
+// axis frames: X arrow sits on the -X face, Y arrow on the -Y face, Z arrow on the base (all facing the default camera)
+const rotFrameQ = [0, 1, 2].map(i => { const q = new THREE.Quaternion(); if (i === 0) q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI));
+  else if (i === 1) q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI)); else q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI); return q; });
+function rotGeom(H, q, ctr, size) {
+  const i = H.axis, axis = new THREE.Vector3().setComponent(i, 1).applyQuaternion(q);
+  const others = [0, 1, 2].filter(k => k !== i); const r = 0.5 * Math.hypot(size[others[0]], size[others[1]]) + 4;
+  const off = i === 2 ? -size[2] / 2 : -size[i] / 2 - 1; const c = ctr.clone().add(axis.clone().multiplyScalar(off));
+  return { axis, r, c };
+}
+function placeRotArrow(H, q, ctr, size) { const { r, c } = rotGeom(H, q, ctr, size); H.mesh.position.copy(c); H.mesh.quaternion.copy(q).multiply(rotFrameQ[H.axis]); H.mesh.scale.setScalar(r); H.mesh.visible = !hDrag || hDrag.H === H; }
+const angleLabel = document.createElement('div'); angleLabel.className = 'dimlabel active'; angleLabel.style.display = 'none'; labelLayer.appendChild(angleLabel);
+let rDrag = null;
+function startRotate(H, e) {
+  const n = hTarget, q = C.nodeQuat(n), size = C.localSize(n, hBox), ctr = C.handlePoint(n, [0, 0, 0], hBox);
+  const { axis, c } = rotGeom(H, q, ctr, size); const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(axis, c);
+  const p0 = ray.ray.intersectPlane(plane, new THREE.Vector3()); if (!p0) return false;
+  commit(); orbit.enabled = false; H.pick[0].material = hMat.hot;
+  rDrag = { H, axis, c, ctr, plane, v0: p0.sub(c).normalize(), starts: selected().map(x => structuredClone(x)), virt: n.virtual ? structuredClone(n) : null, box: hBox.clone(), deg: 0 };
+  hDrag = { H, cur: n, box: hBox, startNode: structuredClone(n) }; e.preventDefault(); return true;
+}
+function applyRotate(p, mods) {
+  const v = p.clone().sub(rDrag.c).normalize(); const cross = new THREE.Vector3().crossVectors(rDrag.v0, v);
+  const raw = THREE.MathUtils.radToDeg(Math.atan2(cross.dot(rDrag.axis), rDrag.v0.dot(v)));
+  const deg = snapAngle(raw, mods); rDrag.deg = deg;
+  const out = C.rotateAbout(rDrag.starts, rDrag.ctr.toArray(), rDrag.axis.toArray(), deg);
+  out.forEach(x => { nodes[nodes.findIndex(y => y.id === x.id)] = x; const m = meshes.get(x.id); if (m) m.matrix.copy(C.nodeMatrix(x)); });
+  hDrag.cur = rDrag.virt ? C.rotateAbout([rDrag.virt], rDrag.ctr.toArray(), rDrag.axis.toArray(), deg)[0] : out[0];
+  updateHandles(); renderProps(true); updateRuler();
+  const [x, y] = toScreen(p); angleLabel.style.display = 'block'; angleLabel.style.left = x + 'px'; angleLabel.style.top = (y - 22) + 'px'; angleLabel.textContent = (deg > 0 ? '+' : '') + deg + '°';
+}
+const snapAngle = (d, m) => C.snapAngle(d, { shift: m.shift, free: m.alt || !snap });
 function dragPlaneFor(H, n, point) {
   const zAxis = new THREE.Vector3(0, 0, 1).applyQuaternion(C.nodeQuat(n));
   if (H.kind === 'corner' || H.kind === 'side') return new THREE.Plane().setFromNormalAndCoplanarPoint(zAxis, point);
@@ -328,8 +367,8 @@ function dragPlaneFor(H, n, point) {
 }
 function handlePointerDown(e) {
   if (!hGroup.visible || !hTarget) return false; setNdc(e);
-  const hit = ray.intersectObjects(HANDLES.map(H => H.mesh), false)[0]; if (!hit) return false;
-  const H = hit.object.userData.handle; const n = hTarget; const point = H.mesh.position.clone();
+  const hit = ray.intersectObjects(HANDLES.flatMap(H => H.pick || [H.mesh]), false)[0]; if (!hit) return false;
+  const H = hit.object.userData.handle; if (H.kind === 'rot') return startRotate(H, e); const n = hTarget; const point = H.mesh.position.clone();
   const planeH = dragPlaneFor(H, n, point); const start = ray.ray.intersectPlane(planeH, new THREE.Vector3()); if (!start) return false;
   commit(); orbit.enabled = false; hit.object.material = hMat.hot;
   hDrag = { H, id: n.id, start, plane: planeH, startNode: structuredClone(n), cur: n, box: n.virtual ? C.bbox(selected()) : C.localBox(n), starts: selected().map(x => structuredClone(x)), uniform: e.shiftKey }; e.preventDefault(); return true;
@@ -351,9 +390,10 @@ function applyHandleDrag(worldDelta, mods = {}) {
   const m = meshes.get(hDrag.id); if (m) { m.matrix.copy(C.nodeMatrix(nodes[i])); }
   updateHandles(); renderProps(true); updateRuler();
 }
-renderer.domElement.addEventListener('pointermove', e => { if (!hDrag) return; setNdc(e); const p = ray.ray.intersectPlane(hDrag.plane, new THREE.Vector3()); if (!p) return;
+renderer.domElement.addEventListener('pointermove', e => { if (!hDrag) return; setNdc(e);
+  if (rDrag) { const p = ray.ray.intersectPlane(rDrag.plane, new THREE.Vector3()); if (p) applyRotate(p, { shift: e.shiftKey, alt: e.altKey }); return; } const p = ray.ray.intersectPlane(hDrag.plane, new THREE.Vector3()); if (!p) return;
   applyHandleDrag(p.sub(hDrag.start), { shift: e.shiftKey, alt: e.altKey }); });
-addEventListener('pointerup', () => { if (!hDrag) return; hDrag.H.mesh.material = hMat[hDrag.H.kind]; hDrag = null; orbit.enabled = true; rebuild(); });
+addEventListener('pointerup', () => { if (!hDrag) return; if (rDrag) { rDrag.H.pick[0].material = rDrag.H.pick[1].material; rDrag = null; angleLabel.style.display = 'none'; } else hDrag.H.mesh.material = hMat[hDrag.H.kind]; hDrag = null; orbit.enabled = true; rebuild(); });
 
 // ---------- settings / clipboard (filled in later) ----------
 let settings = {};
@@ -425,6 +465,13 @@ window.__smoke = async () => { try {
   ev('pointerdown', sx, sy); const grabbed = !!hDrag; ev('pointermove', tx, ty); ev('pointerup', tx, ty, window);
   const w1 = C.localSize(nodes[0])[0]; const labelsShown = LABELS.filter(L => L.el.style.display === 'block').length;
   const afterUndoCount = nodes.length;
+  // rotation arrow drag (Z): sweep ~30° around the centre -> snaps to 22.5°
+  resetHistory(); nodes = [C.makeNode('box')]; sel = [nodes[0].id]; rebuild(); tickHandles(); renderer.render(scene, camera);
+  const RZ = HANDLES.find(x => x.kind === 'rot' && x.axis === 2); const rg = rotGeom(RZ, C.nodeQuat(nodes[0]), C.handlePoint(nodes[0], [0, 0, 0], C.localBox(nodes[0])), C.localSize(nodes[0]));
+  const at = a => rg.c.clone().add(new THREE.Vector3(Math.cos(a), Math.sin(a), 0).multiplyScalar(rg.r));
+  const a0 = THREE.MathUtils.degToRad(225); const [r0x, r0y] = toScreen(at(a0)); const [r1x, r1y] = toScreen(at(a0 + THREE.MathUtils.degToRad(30)));
+  ev('pointerdown', r0x, r0y); const rGrab = !!rDrag; ev('pointermove', r1x, r1y); ev('pointerup', r1x, r1y, window);
+  const rotZ = nodes[0].rot[2]; const rotOk = rGrab && Math.abs(rotZ - 22.5) < 0.01;
   // multi-selection handle drag: two boxes, drag combined +X side by 10mm => combined width +10
   resetHistory(); nodes = [C.makeNode('box'), C.makeNode('box')]; nodes[1].pos = [30, 0, 0]; sel = nodes.map(x => x.id); rebuild(); tickHandles(); renderer.render(scene, camera);
   const mw0 = C.bbox(nodes).getSize(new THREE.Vector3()).x; const [ax, ay] = toScreen(Hx.mesh.position); const [bx, by] = toScreen(Hx.mesh.position.clone().add(new THREE.Vector3(10, 0, 0)));
@@ -432,7 +479,7 @@ window.__smoke = async () => { try {
   const mw1 = C.bbox(nodes).getSize(new THREE.Vector3()).x; const multiOk = mGrab && Math.abs(mw1 - mw0 - 10) < 1.01;
   const dirtyTitle = document.title.includes('•'); filePath = '/tmp/localcad-smoke.lcad'; await save(); const savedTitle = document.title;
   const px = renderer.domElement.toDataURL().length;
-  return { ok: multiOk && wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && afterUndoCount === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, multiOk, mw0, mw1, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
+  return { ok: rotOk && multiOk && wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && afterUndoCount === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, rotOk, rotZ, multiOk, mw0, mw1, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
 } catch (e) { return { ok: false, error: String(e.stack || e) }; } };
 // deterministic scene for screenshots: one rotated box with handles, fixed camera
 window.__shotScene = () => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; setMode('handles'); rebuild(); home(); orbit.update(); tickHandles(); renderer.render(scene, camera); return true; };
