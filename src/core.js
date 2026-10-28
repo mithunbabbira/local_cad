@@ -71,7 +71,7 @@ export function primitiveGeometry(node) {
       g = new TextGeometry(String(p.text || ' '), { font, size: p.size, depth: p.h, height: p.h, curveSegments: 6, bevelEnabled: false });
       g.computeBoundingBox(); const b = g.boundingBox;
       g.translate(-(b.min.x + b.max.x) / 2, -(b.min.y + b.max.y) / 2, -b.min.z); break; }
-    case 'mesh': g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(node.params.positions, 3)); break;
+    case 'mesh': g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(meshPositions(node), 3)); break;
     default: throw new Error('unknown shape ' + node.type);
   }
   return clean(g);
@@ -106,19 +106,52 @@ const round = v => Math.round(v * 1e4) / 1e4;
 function bake(g, m) { g = g.clone(); g.applyMatrix4(m); if (m.determinant() < 0) flip(g); else g.computeVertexNormals(); return g; }
 
 const evaluator = new Evaluator(); evaluator.attributes = ['position', 'normal']; evaluator.useGroups = false;
-const cache = new Map();
+// Geometry cache keyed by *shape content* (type+params, or group structure), not by object identity.
+// Small LRU so long sessions don't grow memory without bound.
+const cache = new Map(); const CACHE_MAX = 400;
+function cacheGet(k) { const v = cache.get(k); if (v) { cache.delete(k); cache.set(k, v); } return v; }
+export function cachePut(k, v) { cache.set(k, v); if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value); }
+export function cacheHas(k) { return cache.has(k); }
+const mkey = n => n.pos.join(',') + '|' + n.rot.join(',') + '|' + n.scale.join(',');
+/** Stable content key: two nodes with the same key always produce identical local geometry. */
+export function geoKey(n) {
+  if (n.type === 'mesh') return 'mesh:' + (n.params.hash || (n.params.hash = hashPositions(meshPositions(n))));
+  if (n.type !== 'group') return n.type + JSON.stringify(n.params);
+  return 'g(' + n.children.map(c => (c.hole ? 'H' : 'S') + geoKey(c) + '@' + mkey(c)).join(';') + ')';
+}
+/** Optional async CSG hook (set by the app to offload groups to a Web Worker). */
+export const csgHooks = { async: null };
 /** Local-space geometry of a node (for groups: CSG of children, holes subtracted). */
-export function localGeometry(n) {
-  if (n.type !== 'group') { const k = n.type + JSON.stringify(n.params); if (!cache.has(k)) cache.set(k, primitiveGeometry(n)); return cache.get(k); }
-  const solids = [], holes = [];
-  for (const c of n.children) (c.hole ? holes : solids).push(bake(localGeometry(c), nodeMatrix(c)));
+export function localGeometry(n, opts = {}) {
+  const k = geoKey(n); const hit = cacheGet(k); if (hit) return hit;
+  if (n.type !== 'group') { const g = primitiveGeometry(n); cachePut(k, g); return g; }
+  if (csgHooks.async && !opts.sync) { csgHooks.async(n, k); return placeholderGeometry(n); }
+  const g = computeGroup(n); cachePut(k, g); return g;
+}
+export function computeGroup(n) {
+  let solids = [], holes = [];
+  for (const c of n.children) (c.hole ? holes : solids).push(bake(localGeometry(c, { sync: true }), nodeMatrix(c)));
+  // A group made only of holes is itself a hole: keep the union of the holes as its shape.
+  if (!solids.length) { solids = holes; holes = []; }
   if (!solids.length) return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([], 3));
   let acc = new Brush(solids[0]);
   for (let i = 1; i < solids.length; i++) acc = evaluator.evaluate(acc, new Brush(solids[i]), ADDITION);
   for (const h of holes) acc = evaluator.evaluate(acc, new Brush(h), SUBTRACTION);
   return clean(acc.geometry);
 }
-export function worldGeometry(n) { return bake(localGeometry(n), nodeMatrix(n)); }
+/** Cheap stand-in while a group's CSG is still computing: children merged without boolean ops. */
+export function placeholderGeometry(n) {
+  const kids = n.children.filter(c => !c.hole); const use = kids.length ? kids : n.children;
+  const gs = use.map(c => bake(localGeometry(c), nodeMatrix(c))).filter(g => g.attributes.position.count);
+  const g = gs.length ? mergeGeometries(gs) : new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+  g.userData.placeholder = true; return g;
+}
+const wcache = new Map();
+export function worldGeometry(n) {
+  const lg = localGeometry(n); const k = geoKey(n) + '#' + mkey(n);
+  if (!lg.userData.placeholder) { const w = wcache.get(k); if (w) return w; }
+  const g = bake(lg, nodeMatrix(n)); if (!lg.userData.placeholder) { wcache.set(k, g); if (wcache.size > 200) wcache.delete(wcache.keys().next().value); } return g;
+}
 
 export function groupNodes(nodes) {
   const g = makeNode('group', { name: 'Group', children: nodes.map(n => structuredClone(n)), hole: nodes.every(n => n.hole) });
@@ -176,11 +209,19 @@ export function parseOBJ(text) {
   }
   return pos;
 }
+export function meshPositions(n) {
+  const p = n.params; if (p._f32) return p._f32;
+  let f; if (p.b64) { const bin = typeof atob === 'function' ? Uint8Array.from(atob(p.b64), c => c.charCodeAt(0)) : new Uint8Array(Buffer.from(p.b64, 'base64')); f = new Float32Array(bin.buffer, bin.byteOffset, bin.byteLength / 4); }
+  else f = Float32Array.from(p.positions || []);
+  Object.defineProperty(p, '_f32', { value: f, enumerable: false, configurable: true }); return f;
+}
+function toB64(f32) { const u8 = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength); if (typeof btoa !== 'function') return Buffer.from(u8).toString('base64'); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+export function hashPositions(f) { let h = 2166136261 >>> 0; const u = new Uint32Array(f.buffer, f.byteOffset, f.length); for (let i = 0; i < u.length; i++) { h ^= u[i]; h = Math.imul(h, 16777619) >>> 0; } return h.toString(36) + '_' + f.length; }
 export function meshNodeFromPositions(name, pos) {
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.computeBoundingBox();
   const b = g.boundingBox; const c = [-(b.min.x + b.max.x) / 2, -(b.min.y + b.max.y) / 2, -b.min.z];
-  const p = Array.from(pos, (x, i) => round(x + c[i % 3]));
-  return makeNode('mesh', { name, params: { positions: p }, color: '#7f8c8d' });
+  const f = Float32Array.from(pos, (x, i) => x + c[i % 3]);
+  return makeNode('mesh', { name, params: { b64: toB64(f), hash: hashPositions(f) }, color: '#7f8c8d' });
 }
 export function serialize(nodes, camera) { return JSON.stringify({ format: 'localcad', version: 1, units: 'mm', nodes, camera }, null, 1); }
 export function deserialize(text) {
@@ -226,6 +267,7 @@ export function resizeNode(start, h, dLocal, opts = {}, box = localBox(start)) {
   if (uniform && !centre) for (let i = 0; i < 3; i++) if (!h[i]) a[i] = i === 2 ? box.min.getComponent(2) : a[i]; // uniform grows upward from the base
   const shift = new THREE.Vector3(...a.map((v, i) => v * (start.scale[i] - n.scale[i]))).applyQuaternion(nodeQuat(start));
   n.pos = start.pos.map((p, i) => round(p + shift.getComponent(i)));
+  if (opts.keepOnPlane) { const z0 = bbox([start]).min.z; if (Math.abs(z0) < 1e-3) n.pos[2] = round(n.pos[2] - bbox([n]).min.z); }
   return n;
 }
 /** Set an exact size along one local axis (used by clickable dimension labels). */

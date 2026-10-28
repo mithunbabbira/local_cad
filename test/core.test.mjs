@@ -60,4 +60,23 @@ t('resize: min size clamp and exact value setter', () => {
   near(C.localSize(C.setLocalSize(C.makeNode('sphere'), 2, 42.5))[2], 42.5); });
 t('resize: mirrored shape keeps mirror sign', () => {
   const b = C.makeNode('box'); b.scale = [-1, 1, 1]; const r = C.resizeNode(b, [1, 0, 0], [10, 0, 0]); assert.ok(r.scale[0] < 0); near(C.localSize(r)[0], 30); });
+t('group of only holes stays a (non-empty) hole', () => {
+  const a = C.makeNode('box', { hole: true }), b = C.makeNode('cylinder', { hole: true }); b.pos = [15, 0, 0]; const g = C.groupNodes([a, b]);
+  assert.ok(g.hole); assert.ok(C.localGeometry(g).attributes.position.count > 0);
+  const s = C.makeNode('box', { params: { w: 60, d: 40, h: 10 } }); const v = Math.abs(C.signedVolume(C.worldGeometry(C.groupNodes([s, g]))));
+  assert.ok(v < 24000 - 1000, 'hole group should cut: ' + v); });
+t('group geometry is cached (second bbox is fast)', () => {
+  const parts = []; for (let i = 0; i < 6; i++) { const s = C.makeNode(i % 2 ? 'sphere' : 'cylinder', { hole: i % 2 == 1 }); s.pos = [i * 8, 0, 0]; parts.push(s); }
+  const g = C.groupNodes(parts); C.bbox([g]); const t0 = performance.now(); for (let i = 0; i < 20; i++) C.bbox([g]); const ms = (performance.now() - t0) / 20;
+  assert.ok(ms < 5, 'bbox ms ' + ms); });
+t('imported mesh: compact storage, cheap cache key, survives JSON', () => {
+  const pos = C.parseSTL(C.toSTL([C.makeNode('sphere', { params: { r: 10, segments: 64 } })])); const m = C.meshNodeFromPositions('m', pos);
+  assert.ok(!m.params.positions && m.params.b64); const json = JSON.stringify(m); assert.ok(json.length < pos.length * 4 * 1.5, 'json ' + json.length);
+  const back = JSON.parse(json); const t0 = performance.now(); for (let i = 0; i < 50; i++) C.localGeometry(back); assert.ok((performance.now() - t0) / 50 < 1);
+  near(Math.abs(C.signedVolume(C.worldGeometry(back))), Math.abs(C.signedVolume(C.worldGeometry(m)))); });
+t('legacy mesh projects with plain positions still load', () => {
+  const m = C.makeNode('mesh', { params: { positions: Array.from(C.parseSTL(C.toSTL([C.makeNode('box')]))) } }); near(Math.abs(C.signedVolume(C.worldGeometry(m))), 8000, 1); });
+t('resize keepOnPlane: tilted shape stays on the workplane', () => {
+  const r = C.makeNode('box'); r.rot = [30, 0, 0]; r.pos[2] = -C.bbox([r]).min.z;
+  const rr = C.resizeNode(r, [0, 0, 1], [0, 0, 10], { keepOnPlane: true }); near(C.bbox([rr]).min.z, 0); assert.ok(C.localSize(rr)[2] > 29); });
 console.log(`\n${pass} tests passed`);

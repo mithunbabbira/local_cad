@@ -9,10 +9,13 @@ THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
 // ---------- state ----------
 let mode = 'handles', nodes = [], sel = [], undoStack = [], redoStack = [], lastDup = null, snap = 1, filePath = null;
-const snapshot = () => JSON.stringify(nodes);
+// History entries capture nodes *and* the selection so undo/redo restores what was selected.
+const snapshot = () => JSON.stringify({ nodes, sel });
+function restore(snap) { const d = JSON.parse(snap); nodes = d.nodes; sel = d.sel || []; keepSel(); rebuild(); }
 function commit() { undoStack.push(snapshot()); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
-function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); nodes = JSON.parse(undoStack.pop()); keepSel(); rebuild(); }
-function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); nodes = JSON.parse(redoStack.pop()); keepSel(); rebuild(); }
+function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); }
+function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); }
+function resetHistory() { undoStack = []; redoStack = []; lastDup = null; }
 const byId = id => nodes.find(n => n.id === id);
 const selected = () => sel.map(byId).filter(Boolean);
 function keepSel() { sel = sel.filter(byId); }
@@ -312,7 +315,7 @@ function applyHandleDrag(worldDelta, mods = {}) {
   hDrag.uniform = !!mods.shift;
   if (H.kind === 'lift') { const n = structuredClone(startNode); n.pos[2] = Math.round((startNode.pos[2] + snapV(worldDelta.z)) * 1e4) / 1e4; nodes[i] = n; }
   else { const d = worldDelta.clone().applyQuaternion(C.nodeQuat(startNode).invert());
-    nodes[i] = C.resizeNode(startNode, H.h, d.toArray(), { uniform: !!mods.shift, centre: !!mods.alt, snap }, box); }
+    nodes[i] = C.resizeNode(startNode, H.h, d.toArray(), { uniform: !!mods.shift, centre: !!mods.alt, snap, keepOnPlane: true }, box); }
   const m = meshes.get(hDrag.id); if (m) { m.matrix.copy(C.nodeMatrix(nodes[i])); }
   updateHandles(); renderProps(true); updateRuler();
 }
@@ -323,13 +326,13 @@ addEventListener('pointerup', () => { if (!hDrag) return; hDrag.H.mesh.material 
 // ---------- files ----------
 const native = window.native || { save: async o => { const b = new Blob([o.data]); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = o.name; a.click(); return o.name; }, open: async () => null, onMenu() {} };
 async function save() { const p = await native.save({ data: C.serialize(nodes, { pos: camera.position.toArray(), target: orbit.target.toArray() }), kind: 'json', name: 'design.lcad' }); if (p) { filePath = p; status('Saved ' + p); } }
-async function open() { const f = await native.open(['json']); if (!f) return; try { const d = C.deserialize(new TextDecoder().decode(f.data)); commit(); nodes = d.nodes; sel = []; if (d.camera) { camera.position.fromArray(d.camera.pos); orbit.target.fromArray(d.camera.target); } rebuild(); status('Opened ' + f.name); } catch (e) { alert('Could not open: ' + e.message); } }
+async function open() { const f = await native.open(['json']); if (!f) return; try { const d = C.deserialize(new TextDecoder().decode(f.data)); resetHistory(); nodes = d.nodes; sel = []; if (d.camera) { camera.position.fromArray(d.camera.pos); orbit.target.fromArray(d.camera.target); } rebuild(); status('Opened ' + f.name); } catch (e) { alert('Could not open: ' + e.message); } }
 async function importMesh() { const f = await native.open(['stl', 'obj']); if (!f) return; const u8 = new Uint8Array(f.data);
   const pos = /\.obj$/i.test(f.name) ? C.parseOBJ(new TextDecoder().decode(u8)) : C.parseSTL(u8); if (!pos.length) return alert('No triangles found');
   commit(); const n = C.meshNodeFromPositions(f.name.replace(/\.\w+$/, ''), pos); nodes.push(n); sel = [n.id]; rebuild(); fit(); }
 async function exportFile(kind) { const s = selected().length ? selected() : nodes; if (!s.filter(n => !n.hole).length) return alert('Nothing solid to export');
   const p = kind === 'stl' ? await native.save({ data: C.toSTL(s), kind: 'stl', name: 'design.stl', binary: true }) : await native.save({ data: C.toOBJ(s), kind: 'obj', name: 'design.obj' }); if (p) status('Exported ' + p); }
-function newDoc() { if (nodes.length && !confirm('Discard the current design?')) return; commit(); nodes = []; sel = []; filePath = null; rebuild(); home(); }
+function newDoc() { if (nodes.length && !confirm('Discard the current design?')) return; resetHistory(); nodes = []; sel = []; filePath = null; rebuild(); home(); }
 
 const actions = { new: newDoc, open, save, import: importMesh, exportstl: () => exportFile('stl'), exportobj: () => exportFile('obj'), undo, redo, duplicate, delete: del, group, ungroup };
 native.onMenu(c => actions[c] && actions[c]());
@@ -368,7 +371,7 @@ rebuild(); home();
 window.__smoke = () => { try {
   addShape('box', false, new THREE.Vector3(0, 0, 0)); addShape('cylinder', true, new THREE.Vector3(10, 0, 0));
   sel = nodes.map(n => n.id); group(); const g = nodes[0]; const v = Math.abs(C.signedVolume(C.worldGeometry(g)));
-  duplicate(); undo(); sel = [nodes[0].id]; ungroup(); const n = nodes.length; undo();
+  duplicate(); undo(); const selRestored = sel.length === 1 && sel[0] === g.id; ungroup(); const n = nodes.length; undo();
   const stl = C.toSTL(nodes); renderer.render(scene, camera);
   // handle drag via real pointer events: drag the +X side handle of the selected group by ~+10mm
   sel = [nodes[0].id]; setMode('handles'); rebuild(); fly(new THREE.Vector3(0, 0, 1), 250); orbit.target.set(0, 0, 0); orbit.update(); tickHandles(); renderer.render(scene, camera);
@@ -379,5 +382,5 @@ window.__smoke = () => { try {
   const w1 = C.localSize(nodes[0])[0]; const labelsShown = LABELS.filter(L => L.el.style.display === 'block').length;
   setTimeout(() => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; rebuild(); home(); }, 0);
   const px = renderer.domElement.toDataURL().length;
-  return { ok: nodes.length === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
+  return { ok: selRestored && nodes.length === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, selRestored, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
 } catch (e) { return { ok: false, error: String(e.stack || e) }; } };
