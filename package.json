@@ -46,7 +46,8 @@
         "zip",
         "dmg"
       ],
-      "identity": null
+      "identity": null,
+      "icon": "assets/icon.png"
     },
     "directories": {
       "output": "dist"
@@ -55,6 +56,16 @@
     "compression": "maximum",
     "electronLanguages": [
       "en"
+    ],
+    "icon": "assets/icon.png",
+    "fileAssociations": [
+      {
+        "ext": "lcad",
+        "name": "LocalCAD Design",
+        "description": "LocalCAD design",
+        "role": "Editor",
+        "mimeType": "application/x-localcad"
+      }
     ]
   }
 }
