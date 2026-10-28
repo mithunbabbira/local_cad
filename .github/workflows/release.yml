@@ -3,6 +3,10 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to attach the builds to (e.g. v1.1.0)'
+        required: false
 permissions:
   contents: write
 jobs:
@@ -17,10 +21,23 @@ jobs:
       - run: npm ci
       - name: Unit tests
         run: npm test
-      - name: Build dmg + zip (arm64 and x64, unsigned)
+      - name: Build zip (arm64 and x64, unsigned)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: node build.mjs && npx electron-builder --mac dmg zip --arm64 --x64 --publish never
+        run: node build.mjs && npx electron-builder --mac zip --arm64 --x64 --publish never
+      # hdiutil on hosted runners fails intermittently ("Device not configured") when dmgs are made in parallel,
+      # so build one architecture at a time and retry.
+      - name: Build dmg (one arch at a time, with retries)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          for arch in arm64 x64; do
+            for attempt in 1 2 3 4; do
+              npx electron-builder --mac dmg --$arch --publish never && break
+              echo "dmg $arch attempt $attempt failed, retrying"; sleep 15
+              [ $attempt = 4 ] && exit 1
+            done
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: LocalCAD-mac
@@ -28,9 +45,10 @@ jobs:
             dist/*.dmg
             dist/*.zip
       - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             dist/*.dmg
