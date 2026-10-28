@@ -8,13 +8,13 @@ const view = $('#view'), status = m => ($('#status').textContent = m);
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
 // ---------- state ----------
-let mode = 'handles', nodes = [], sel = [], undoStack = [], redoStack = [], lastDup = null, snap = 1, filePath = null;
+let dirty = false, mode = 'handles', nodes = [], sel = [], undoStack = [], redoStack = [], lastDup = null, snap = 1, filePath = null;
 // History entries capture nodes *and* the selection so undo/redo restores what was selected.
 const snapshot = () => JSON.stringify({ nodes, sel });
 function restore(snap) { const d = JSON.parse(snap); nodes = d.nodes; sel = d.sel || []; keepSel(); rebuild(); }
-function commit() { undoStack.push(snapshot()); if (undoStack.length > 200) undoStack.shift(); redoStack = []; }
-function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); }
-function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); }
+function commit() { undoStack.push(snapshot()); if (undoStack.length > 200) undoStack.shift(); redoStack = []; setDirty(true); }
+function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); setDirty(true); }
+function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); setDirty(true); }
 function resetHistory() { undoStack = []; redoStack = []; lastDup = null; }
 const byId = id => nodes.find(n => n.id === id);
 const selected = () => sel.map(byId).filter(Boolean);
@@ -323,18 +323,37 @@ renderer.domElement.addEventListener('pointermove', e => { if (!hDrag) return; s
   applyHandleDrag(p.sub(hDrag.start), { shift: e.shiftKey, alt: e.altKey }); });
 addEventListener('pointerup', () => { if (!hDrag) return; hDrag.H.mesh.material = hMat[hDrag.H.kind]; hDrag = null; orbit.enabled = true; rebuild(); });
 
+// ---------- settings / clipboard (filled in later) ----------
+let settings = {};
+function applySettings(s) { settings = { ...settings, ...s }; }
+function copySel() {}
+function paste() {}
+
 // ---------- files ----------
-const native = window.native || { save: async o => { const b = new Blob([o.data]); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = o.name; a.click(); return o.name; }, open: async () => null, onMenu() {} };
-async function save() { const p = await native.save({ data: C.serialize(nodes, { pos: camera.position.toArray(), target: orbit.target.toArray() }), kind: 'json', name: 'design.lcad' }); if (p) { filePath = p; status('Saved ' + p); } }
-async function open() { const f = await native.open(['json']); if (!f) return; try { const d = C.deserialize(new TextDecoder().decode(f.data)); resetHistory(); nodes = d.nodes; sel = []; if (d.camera) { camera.position.fromArray(d.camera.pos); orbit.target.fromArray(d.camera.target); } rebuild(); status('Opened ' + f.name); } catch (e) { alert('Could not open: ' + e.message); } }
+const native = window.native || { save: async o => { const b = new Blob([o.data]); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = o.name; a.click(); return o.name; },
+  saveTo: async o => o.filePath, open: async () => null, confirm: async m => confirm(m), setState() {}, closeNow() {}, onMenu() {}, onOpenData() {} };
+const baseName = p => (p ? p.split(/[\\/]/).pop() : 'Untitled');
+function setDirty(d) { dirty = d; const t = `${baseName(filePath)}${dirty ? ' •' : ''} — LocalCAD`; document.title = t; native.setState({ dirty, title: t, filePath }); }
+const projectText = () => C.serialize(nodes, { pos: camera.position.toArray(), target: orbit.target.toArray() }, settings);
+async function saveAs() { const p = await native.save({ data: projectText(), kind: 'json', name: filePath ? baseName(filePath) : 'design.lcad' }); if (p) { filePath = p; setDirty(false); status('Saved ' + p); } return !!p; }
+async function save() { if (!filePath) return saveAs(); await native.saveTo({ data: projectText(), filePath }); setDirty(false); status('Saved ' + filePath); return true; }
+async function okToDiscard() { return !dirty || !nodes.length || native.confirm('Discard unsaved changes to ' + baseName(filePath) + '?'); }
+function loadProject(f) { try { const d = C.deserialize(new TextDecoder().decode(f.data)); resetHistory(); nodes = d.nodes; sel = []; if (d.settings) applySettings(d.settings);
+  if (d.camera) { camera.position.fromArray(d.camera.pos); orbit.target.fromArray(d.camera.target); } filePath = f.path || null; setDirty(false); rebuild(); status('Opened ' + f.name); } catch (e) { alert('Could not open: ' + e.message); } }
+async function open() { if (!(await okToDiscard())) return; const f = await native.open(['json']); if (f) loadProject(f); }
+native.onOpenData(async f => { if (await okToDiscard()) loadProject(f); });
 async function importMesh() { const f = await native.open(['stl', 'obj']); if (!f) return; const u8 = new Uint8Array(f.data);
   const pos = /\.obj$/i.test(f.name) ? C.parseOBJ(new TextDecoder().decode(u8)) : C.parseSTL(u8); if (!pos.length) return alert('No triangles found');
   commit(); const n = C.meshNodeFromPositions(f.name.replace(/\.\w+$/, ''), pos); nodes.push(n); sel = [n.id]; rebuild(); fit(); }
 async function exportFile(kind) { const s = selected().length ? selected() : nodes; if (!s.filter(n => !n.hole).length) return alert('Nothing solid to export');
   const p = kind === 'stl' ? await native.save({ data: C.toSTL(s), kind: 'stl', name: 'design.stl', binary: true }) : await native.save({ data: C.toOBJ(s), kind: 'obj', name: 'design.obj' }); if (p) status('Exported ' + p); }
-function newDoc() { if (nodes.length && !confirm('Discard the current design?')) return; resetHistory(); nodes = []; sel = []; filePath = null; rebuild(); home(); }
-
-const actions = { new: newDoc, open, save, import: importMesh, exportstl: () => exportFile('stl'), exportobj: () => exportFile('obj'), undo, redo, duplicate, delete: del, group, ungroup };
+async function newDoc() { if (!(await okToDiscard())) return; resetHistory(); nodes = []; sel = []; filePath = null; setDirty(false); rebuild(); home(); }
+function inField() { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT'); }
+function toggleLock() { if (!sel.length) return; commit(); const l = !selected().every(n => n.locked); selected().forEach(n => (n.locked = l)); rebuild(); }
+function selectAll() { if (inField()) return document.execCommand('selectAll'); sel = nodes.filter(n => !n.hidden).map(n => n.id); rebuild(); }
+const actions = { new: newDoc, open, save, saveas: saveAs, 'save-and-close': async () => { if (await save()) native.closeNow(); }, lock: toggleLock, hide, showall: showAll, selectall: selectAll,
+  copy: () => (inField() ? document.execCommand('copy') : copySel()), cut: () => (inField() ? document.execCommand('cut') : (copySel(), del())), paste: () => (inField() ? document.execCommand('paste') : paste()),
+  import: importMesh, exportstl: () => exportFile('stl'), exportobj: () => exportFile('obj'), undo, redo, duplicate, delete: del, group, ungroup };
 native.onMenu(c => actions[c] && actions[c]());
 document.querySelectorAll('#toolbar [data-a]').forEach(b => (b.onclick = () => actions[b.dataset.a]()));
 document.querySelectorAll('#toolbar [data-m]').forEach(b => (b.onclick = () => setMode(b.dataset.m)));
@@ -346,16 +365,7 @@ tc.setTranslationSnap(1); tc.setRotationSnap(THREE.MathUtils.degToRad(15)); tc.s
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase(), step = e.shiftKey ? 10 : (snap || 1);
-  if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
-  else if (mod && k === 'y') { e.preventDefault(); redo(); }
-  else if (mod && k === 'd') { e.preventDefault(); duplicate(); }
-  else if (mod && k === 'g') { e.preventDefault(); e.shiftKey ? ungroup() : group(); }
-  else if (mod && k === 'l') { e.preventDefault(); commit(); const l = !selected().every(n => n.locked); selected().forEach(n => (n.locked = l)); rebuild(); }
-  else if (mod && e.shiftKey && k === 'h') { e.preventDefault(); hide(); }
-  else if (mod && e.shiftKey && k === 'a') { e.preventDefault(); showAll(); }
-  else if (mod && k === 'a') { e.preventDefault(); sel = nodes.filter(n => !n.hidden).map(n => n.id); rebuild(); }
-  else if (mod && k === 's') { e.preventDefault(); save(); } else if (mod && k === 'o') { e.preventDefault(); open(); }
-  else if (mod && (k === 'arrowup' || k === 'arrowdown')) { e.preventDefault(); nudge(2, k === 'arrowup' ? step : -step); }
+  if (mod && (k === 'arrowup' || k === 'arrowdown')) { e.preventDefault(); nudge(2, k === 'arrowup' ? step : -step); }
   else if (mod) return;
   else if (k === 'delete' || k === 'backspace') del();
   else if (k === 'arrowleft') nudge(0, -step); else if (k === 'arrowright') nudge(0, step);
@@ -365,10 +375,11 @@ addEventListener('keydown', e => {
   else if (k === 'q') setMode('handles'); else if (k === 'w') setMode('translate'); else if (k === 'e') setMode('rotate'); else if (k === 'r') setMode('scale');
   else if (k === 'm') mirror(0); else if (k === 'l') align('x', 'mid');
 });
-rebuild(); home();
+setDirty(false); rebuild(); home();
 
 // ---------- smoke test hook (used by `npm run smoke`) ----------
-window.__smoke = () => { try {
+window.__smoke = async () => { try {
+  const dirtyStart = dirty;
   addShape('box', false, new THREE.Vector3(0, 0, 0)); addShape('cylinder', true, new THREE.Vector3(10, 0, 0));
   sel = nodes.map(n => n.id); group(); const g = nodes[0]; const v = Math.abs(C.signedVolume(C.worldGeometry(g)));
   duplicate(); undo(); const selRestored = sel.length === 1 && sel[0] === g.id; ungroup(); const n = nodes.length; undo();
@@ -380,7 +391,9 @@ window.__smoke = () => { try {
   const ev = (t, x, y, tgt) => (tgt || renderer.domElement).dispatchEvent(new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, button: 0, bubbles: true }));
   ev('pointerdown', sx, sy); const grabbed = !!hDrag; ev('pointermove', tx, ty); ev('pointerup', tx, ty, window);
   const w1 = C.localSize(nodes[0])[0]; const labelsShown = LABELS.filter(L => L.el.style.display === 'block').length;
-  setTimeout(() => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; rebuild(); home(); }, 0);
+  const dirtyTitle = document.title.includes('•'); filePath = '/tmp/localcad-smoke.lcad'; await save(); const savedTitle = document.title;
   const px = renderer.domElement.toDataURL().length;
-  return { ok: selRestored && nodes.length === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, selRestored, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
+  return { ok: !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && nodes.length === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, selRestored, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
 } catch (e) { return { ok: false, error: String(e.stack || e) }; } };
+// deterministic scene for screenshots: one rotated box with handles, fixed camera
+window.__shotScene = () => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; setMode('handles'); rebuild(); home(); orbit.update(); tickHandles(); renderer.render(scene, camera); return true; };

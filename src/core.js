@@ -223,7 +223,7 @@ export function meshNodeFromPositions(name, pos) {
   const f = Float32Array.from(pos, (x, i) => x + c[i % 3]);
   return makeNode('mesh', { name, params: { b64: toB64(f), hash: hashPositions(f) }, color: '#7f8c8d' });
 }
-export function serialize(nodes, camera) { return JSON.stringify({ format: 'localcad', version: 1, units: 'mm', nodes, camera }, null, 1); }
+export function serialize(nodes, camera, settings) { return JSON.stringify({ format: 'localcad', version: 1, units: 'mm', nodes, camera, settings }); }
 export function deserialize(text) {
   const d = JSON.parse(text); if (d.format !== 'localcad') throw new Error('Not a LocalCAD project'); return d;
 }
