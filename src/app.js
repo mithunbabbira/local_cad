@@ -20,6 +20,22 @@ const byId = id => nodes.find(n => n.id === id);
 const selected = () => sel.map(byId).filter(Boolean);
 function keepSel() { sel = sel.filter(byId); }
 
+// ---------- background CSG ----------
+const csgPending = new Map(); let idleWaiters = [];
+const computing = document.createElement('div'); computing.id = 'computing'; computing.textContent = 'Computing…'; document.body.appendChild(computing);
+let csgWorker = null;
+try { csgWorker = new Worker('csg-worker.bundle.js'); } catch (e) { console.warn('CSG worker unavailable, computing on main thread', e); }
+if (csgWorker) {
+  C.csgHooks.async = (n, key) => { if (csgPending.has(key)) return; csgPending.set(key, true); computing.style.display = 'block'; csgWorker.postMessage({ key, node: n }); };
+  csgWorker.onmessage = ({ data }) => {
+    csgPending.delete(data.key);
+    if (data.error) status('CSG error: ' + data.error); else C.cachePut(data.key, C.geometryFromArrays(data.pos, data.nrm));
+    if (!csgPending.size) { computing.style.display = 'none'; idleWaiters.forEach(f => f()); idleWaiters = []; }
+    rebuild();
+  };
+}
+const whenCsgIdle = () => (csgPending.size ? new Promise(r => idleWaiters.push(r)) : Promise.resolve());
+
 // ---------- renderer ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(devicePixelRatio); view.appendChild(renderer.domElement);
@@ -57,7 +73,8 @@ function rebuild() {
   for (const m of meshes.values()) scene.remove(m); meshes.clear();
   for (const n of nodes) {
     let geo; try { geo = C.localGeometry(n); } catch (e) { console.error(e); status('Geometry error: ' + e.message); continue; }
-    const m = new THREE.Mesh(geo, material(n)); m.userData.id = n.id; m.visible = !n.hidden;
+    const mat = material(n); if (geo.userData.placeholder) { mat.transparent = true; mat.opacity = Math.min(mat.opacity, 0.5); }
+    const m = new THREE.Mesh(geo, mat); m.userData.id = n.id; m.visible = !n.hidden;
     m.matrixAutoUpdate = false; m.matrix.copy(C.nodeMatrix(n)); m.matrixWorldNeedsUpdate = true;
     if (sel.includes(n.id)) { const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: '#1e6fd9' })); m.add(e); }
     scene.add(m); meshes.set(n.id, m);
@@ -177,7 +194,7 @@ function duplicate() {
 }
 function group() {
   const s = selected(); if (s.length < 2) return status('Select 2+ shapes to group'); commit();
-  status('Computing CSG…'); const g = C.groupNodes(s);
+  const g = C.groupNodes(s);
   nodes = nodes.filter(n => !sel.includes(n.id)); nodes.push(g); sel = [g.id]; rebuild(); status('Grouped');
 }
 function ungroup() {
@@ -346,7 +363,7 @@ async function importMesh() { const f = await native.open(['stl', 'obj']); if (!
   const pos = /\.obj$/i.test(f.name) ? C.parseOBJ(new TextDecoder().decode(u8)) : C.parseSTL(u8); if (!pos.length) return alert('No triangles found');
   commit(); const n = C.meshNodeFromPositions(f.name.replace(/\.\w+$/, ''), pos); nodes.push(n); sel = [n.id]; rebuild(); fit(); }
 async function exportFile(kind) { const s = selected().length ? selected() : nodes; if (!s.filter(n => !n.hole).length) return alert('Nothing solid to export');
-  const p = kind === 'stl' ? await native.save({ data: C.toSTL(s), kind: 'stl', name: 'design.stl', binary: true }) : await native.save({ data: C.toOBJ(s), kind: 'obj', name: 'design.obj' }); if (p) status('Exported ' + p); }
+  const p = kind === 'stl' ? await native.save({ data: C.syncCSG(() => C.toSTL(s)), kind: 'stl', name: 'design.stl', binary: true }) : await native.save({ data: C.syncCSG(() => C.toOBJ(s)), kind: 'obj', name: 'design.obj' }); if (p) status('Exported ' + p); }
 async function newDoc() { if (!(await okToDiscard())) return; resetHistory(); nodes = []; sel = []; filePath = null; setDirty(false); rebuild(); home(); }
 function inField() { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT'); }
 function toggleLock() { if (!sel.length) return; commit(); const l = !selected().every(n => n.locked); selected().forEach(n => (n.locked = l)); rebuild(); }
@@ -381,9 +398,10 @@ setDirty(false); rebuild(); home();
 window.__smoke = async () => { try {
   const dirtyStart = dirty;
   addShape('box', false, new THREE.Vector3(0, 0, 0)); addShape('cylinder', true, new THREE.Vector3(10, 0, 0));
-  sel = nodes.map(n => n.id); group(); const g = nodes[0]; const v = Math.abs(C.signedVolume(C.worldGeometry(g)));
+  sel = nodes.map(n => n.id); group(); const g = nodes[0]; const wasAsync = C.localGeometry(g).userData.placeholder === true && computing.style.display === 'block';
+  await whenCsgIdle(); const fromWorker = !C.localGeometry(g).userData.placeholder; const v = Math.abs(C.signedVolume(C.worldGeometry(g)));
   duplicate(); undo(); const selRestored = sel.length === 1 && sel[0] === g.id; ungroup(); const n = nodes.length; undo();
-  const stl = C.toSTL(nodes); renderer.render(scene, camera);
+  const stl = C.syncCSG(() => C.toSTL(nodes)); renderer.render(scene, camera);
   // handle drag via real pointer events: drag the +X side handle of the selected group by ~+10mm
   sel = [nodes[0].id]; setMode('handles'); rebuild(); fly(new THREE.Vector3(0, 0, 1), 250); orbit.target.set(0, 0, 0); orbit.update(); tickHandles(); renderer.render(scene, camera);
   const w0 = C.localSize(nodes[0])[0]; const Hx = HANDLES[4]; const r = renderer.domElement.getBoundingClientRect();
@@ -393,7 +411,7 @@ window.__smoke = async () => { try {
   const w1 = C.localSize(nodes[0])[0]; const labelsShown = LABELS.filter(L => L.el.style.display === 'block').length;
   const dirtyTitle = document.title.includes('•'); filePath = '/tmp/localcad-smoke.lcad'; await save(); const savedTitle = document.title;
   const px = renderer.domElement.toDataURL().length;
-  return { ok: !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && nodes.length === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, selRestored, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
+  return { ok: wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && nodes.length === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
 } catch (e) { return { ok: false, error: String(e.stack || e) }; } };
 // deterministic scene for screenshots: one rotated box with handles, fixed camera
 window.__shotScene = () => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; setMode('handles'); rebuild(); home(); orbit.update(); tickHandles(); renderer.render(scene, camera); return true; };

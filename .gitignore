@@ -2,3 +2,4 @@ node_modules
 dist
 build
 src/bundle.js
+src/csg-worker.bundle.js

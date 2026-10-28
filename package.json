@@ -36,7 +36,9 @@
       "src/index.html",
       "src/style.css",
       "src/bundle.js",
-      "package.json"
+      "package.json",
+      "src/csg-worker.bundle.js",
+      "assets/**"
     ],
     "mac": {
       "category": "public.app-category.graphics-design",

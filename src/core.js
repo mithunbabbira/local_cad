@@ -119,6 +119,9 @@ export function geoKey(n) {
   if (n.type !== 'group') return n.type + JSON.stringify(n.params);
   return 'g(' + n.children.map(c => (c.hole ? 'H' : 'S') + geoKey(c) + '@' + mkey(c)).join(';') + ')';
 }
+/** Run fn with async CSG disabled (exports, measurements that must be exact). */
+export function syncCSG(fn) { const a = csgHooks.async; csgHooks.async = null; try { return fn(); } finally { csgHooks.async = a; } }
+export function geometryFromArrays(pos, nrm) { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); if (nrm && nrm.length) g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3)); else g.computeVertexNormals(); return g; }
 /** Optional async CSG hook (set by the app to offload groups to a Web Worker). */
 export const csgHooks = { async: null };
 /** Local-space geometry of a node (for groups: CSG of children, holes subtracted). */

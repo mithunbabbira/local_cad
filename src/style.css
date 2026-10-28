@@ -8,3 +8,4 @@ button{border:1px solid #c5ccd6;background:#f8f9fb;border-radius:5px;padding:4px
 #status{grid-column:1/4;background:#dfe4ea;padding:4px 8px;font-size:12px}.hint{color:#889;font-size:12px}
 label{display:flex;justify-content:space-between;align-items:center;margin:3px 0}label input{width:90px}.row{display:flex;gap:4px;margin:6px 0}.row button{flex:1}
 .dimlabel{position:absolute;transform:translate(-50%,-50%);background:#fff;border:1px solid #1e6fd9;border-radius:4px;padding:1px 5px;font-size:11px;color:#123;cursor:text;white-space:nowrap}.dimlabel.active{background:#1e6fd9;color:#fff}.dimlabel input{width:70px;font-size:11px}
+#computing{display:none;position:fixed;top:54px;left:50%;transform:translateX(-50%);background:#1e6fd9;color:#fff;padding:4px 12px;border-radius:12px;font-size:12px;z-index:5;box-shadow:0 1px 4px #0003}
