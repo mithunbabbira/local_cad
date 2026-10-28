@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>LocalCAD</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<link rel="stylesheet" href="style.css"></head><body>
+<header id="toolbar">
+ <b class="logo">LocalCAD</b>
+ <button data-a="new">New</button><button data-a="open">Open</button><button data-a="save">Save</button>
+ <span class="sep"></span>
+ <button data-a="undo" title="Ctrl/Cmd+Z">Undo</button><button data-a="redo">Redo</button>
+ <button data-a="duplicate">Duplicate</button><button data-a="delete">Delete</button>
+ <button data-a="group">Group</button><button data-a="ungroup">Ungroup</button>
+ <span class="sep"></span>
+ <button data-m="translate" class="on">Move (W)</button><button data-m="rotate">Rotate (E)</button><button data-m="scale">Scale (R)</button>
+ <span class="sep"></span>
+ Align: <button data-al="x">X</button><button data-al="y">Y</button><button data-al="z">Z</button>
+ <span class="sep"></span>
+ Snap <select id="snap"><option value="0">Off</option><option value="0.5">0.5</option><option value="1" selected>1</option><option value="5">5</option><option value="10">10</option></select> mm
+ <span class="sep"></span>
+ <button data-a="import">Import</button><button data-a="exportstl">STL</button><button data-a="exportobj">OBJ</button>
+</header>
+<aside id="lib"><h3>Basic Shapes</h3><div id="shapes"></div><p class="hint">Click or drag onto the workplane</p></aside>
+<main id="view"></main>
+<div id="viewcube"></div>
+<aside id="props"><h3>Shape</h3><div id="propbody"><p class="hint">Nothing selected</p></div></aside>
+<footer id="status">Ready</footer>
+<script src="bundle.js"></script></body></html>

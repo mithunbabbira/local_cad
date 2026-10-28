@@ -1,0 +1,58 @@
+{
+  "name": "localcad",
+  "version": "1.0.0",
+  "description": "Offline Tinkercad-style 3D CAD",
+  "main": "main.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node build.mjs && electron .",
+    "test": "node build.mjs && node test/core.test.mjs",
+    "smoke": "node build.mjs && LOCALCAD_SMOKE=1 electron . --no-sandbox --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader",
+    "dist": "node build.mjs && electron-builder --mac zip --x64 --arm64",
+    "dist:dmg": "node build.mjs && electron-builder --mac dmg --x64 --arm64"
+  },
+  "author": "SURENDAR D",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^41.7.1",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "three": "^0.186.1",
+    "three-bvh-csg": "^0.0.18",
+    "three-mesh-bvh": "^0.9.16"
+  },
+  "allowScripts": {
+    "electron@41.7.1": true
+  },
+  "productName": "LocalCAD",
+  "build": {
+    "appId": "app.localcad.desktop",
+    "productName": "LocalCAD",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/index.html",
+      "src/style.css",
+      "src/bundle.js",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "target": [
+        "zip",
+        "dmg"
+      ],
+      "identity": null
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "en"
+    ]
+  }
+}
