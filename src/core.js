@@ -278,3 +278,13 @@ export function setLocalSize(start, axis, value, opts = {}) {
   const size = localSize(start); const h = [0, 0, 0]; h[axis] = 1; const d = [0, 0, 0]; d[axis] = value - size[axis];
   return resizeNode(start, h, d, { ...opts, snap: 0 });
 }
+
+/** A transform-only stand-in used for handles around a multi-selection (world-aligned box). */
+export const virtualNode = () => ({ virtual: true, pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1] });
+/** Apply the matrix of a (resized/rotated) virtual node to a set of nodes captured at drag start. */
+export function applyVirtual(starts, v) { const M = nodeMatrix(v); return starts.map(n => { const c = structuredClone(n); setNodeMatrix(c, M.clone().multiply(nodeMatrix(n))); return c; }); }
+/** Resize several shapes together by a handle on their combined world bounding box. */
+export function resizeMany(starts, h, dWorld, opts = {}, box = bbox(starts)) {
+  const v = resizeNode(virtualNode(), h, dWorld, { ...opts, keepOnPlane: false }, box);
+  return { nodes: applyVirtual(starts, v), virtual: v };
+}

@@ -79,4 +79,11 @@ t('legacy mesh projects with plain positions still load', () => {
 t('resize keepOnPlane: tilted shape stays on the workplane', () => {
   const r = C.makeNode('box'); r.rot = [30, 0, 0]; r.pos[2] = -C.bbox([r]).min.z;
   const rr = C.resizeNode(r, [0, 0, 1], [0, 0, 10], { keepOnPlane: true }); near(C.bbox([rr]).min.z, 0); assert.ok(C.localSize(rr)[2] > 29); });
+t('multi-select resize scales the group box and keeps the far side anchored', () => {
+  const a = C.makeNode('box'), b = C.makeNode('box'); b.pos = [30, 0, 0];  // combined X: -10..40 (50 wide)
+  const { nodes } = C.resizeMany([a, b], [1, 0, 0], [50, 0, 0]); const bb = C.bbox(nodes);
+  near(bb.min.x, -10); near(bb.max.x, 90); near(C.localSize(nodes[0])[0], 40); near(nodes[1].pos[0], 70); near(bb.max.z, 20); });
+t('multi-select uniform resize with Shift', () => {
+  const a = C.makeNode('box'), b = C.makeNode('sphere'); b.pos = [30, 0, 0];
+  const { nodes } = C.resizeMany([a, b], [1, 1, 0], [50, 0, 0], { uniform: true }); const s = C.bbox(nodes).getSize(new (C.THREE.Vector3)()); near(s.x, 100); near(s.z, 40); near(C.bbox(nodes).min.z, 0); });
 console.log(`\n${pass} tests passed`);

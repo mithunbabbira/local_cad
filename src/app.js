@@ -272,10 +272,11 @@ const LABELS = [{ axis: 0, at: [0, -1, -1], off: [0, -1, 0] }, { axis: 1, at: [1
 for (const L of LABELS) { L.el = document.createElement('div'); L.el.className = 'dimlabel'; L.el.style.pointerEvents = 'auto'; labelLayer.appendChild(L.el);
   L.el.addEventListener('pointerdown', e => e.stopPropagation()); L.el.addEventListener('click', () => editLabel(L)); }
 let hTarget = null, hBox = null, hDrag = null;
-function handleNode() { const s = selected(); return mode === 'handles' && s.length === 1 && !s[0].locked && !s[0].hidden ? s[0] : null; }
+function handleNode() { const s = selected(); if (mode !== 'handles' || !s.length || s.some(n => n.locked || n.hidden)) return null; return s.length === 1 ? s[0] : C.virtualNode(); }
+const zMin = () => (hTarget.virtual ? C.handlePoint(hTarget, [0, 0, -1], hBox).z : C.bbox([hTarget]).min.z);
 function updateHandles() {
-  hTarget = handleNode(); hGroup.visible = !!hTarget; if (!hTarget) { LABELS.forEach(L => (L.el.style.display = 'none')); return; }
-  hBox = hDrag ? hDrag.box : C.localBox(hTarget);
+  hTarget = hDrag ? hDrag.cur : handleNode(); hGroup.visible = !!hTarget; if (!hTarget) { LABELS.forEach(L => (L.el.style.display = 'none')); return; }
+  hBox = hDrag ? hDrag.box : hTarget.virtual ? C.bbox(selected()) : C.localBox(hTarget);
   const m = C.nodeMatrix(hTarget); const q = C.nodeQuat(hTarget);
   const c = hBox.getCenter(new THREE.Vector3()), sz = hBox.getSize(new THREE.Vector3());
   outline.matrixAutoUpdate = false; outline.matrix.copy(m.clone().multiply(new THREE.Matrix4().compose(c, new THREE.Quaternion(), sz)));
@@ -296,7 +297,7 @@ function updateLabels() {
   for (const L of LABELS) {
     if (L.el.querySelector('input')) continue;
     let val, show = true;
-    if (L.axis === 'z') { const b = C.bbox([hTarget]); val = b.min.z; show = Math.abs(val) > 1e-3 || (dragging && hDrag.H.kind === 'lift'); }
+    if (L.axis === 'z') { val = zMin(); show = Math.abs(val) > 1e-3 || (dragging && hDrag.H.kind === 'lift'); }
     else { val = size[L.axis]; if (dragging && hDrag.H.kind !== 'lift') show = !!hDrag.H.h[L.axis] || (hDrag.uniform); }
     const p = C.handlePoint(hTarget, L.at, hBox); const [x, y, z] = toScreen(p);
     const o = new THREE.Vector3(...L.off).applyQuaternion(C.nodeQuat(hTarget)); const [x2, y2] = toScreen(p.clone().add(o.multiplyScalar(6)));
@@ -306,9 +307,15 @@ function updateLabels() {
 }
 function editLabel(L) {
   const n = hTarget; if (!n) return; const inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any';
-  inp.value = L.axis === 'z' ? +C.bbox([n]).min.z.toFixed(3) : +C.localSize(n)[L.axis].toFixed(3); L.el.textContent = ''; L.el.appendChild(inp); inp.focus(); inp.select();
+  inp.value = L.axis === 'z' ? +zMin().toFixed(3) : +C.localSize(n, hBox)[L.axis].toFixed(3); L.el.textContent = ''; L.el.appendChild(inp); inp.focus(); inp.select();
   const done = ok => { if (!inp.isConnected) return; const v = parseFloat(inp.value); inp.remove();
-    if (ok && isFinite(v)) { commit(); const i = nodes.indexOf(n); nodes[i] = L.axis === 'z' ? { ...n, pos: [n.pos[0], n.pos[1], n.pos[2] + v - C.bbox([n]).min.z] } : v > 0 ? C.setLocalSize(n, L.axis, v) : n; rebuild(); }
+    if (ok && isFinite(v)) { commit();
+      if (n.virtual) { const s = selected(); const box = C.bbox(s); let out;
+        if (L.axis === 'z') { const dz = v - box.min.z; out = s.map(x => ({ ...x, pos: [x.pos[0], x.pos[1], x.pos[2] + dz] })); }
+        else if (v > 0) { const h = [0, 0, 0], d = [0, 0, 0]; h[L.axis] = 1; d[L.axis] = v - C.localSize(n, box)[L.axis]; out = C.resizeMany(s, h, d, {}, box).nodes; } else out = s;
+        out.forEach(x => (nodes[nodes.findIndex(y => y.id === x.id)] = x)); }
+      else { const i = nodes.indexOf(n); nodes[i] = L.axis === 'z' ? { ...n, pos: [n.pos[0], n.pos[1], n.pos[2] + v - C.bbox([n]).min.z] } : v > 0 ? C.setLocalSize(n, L.axis, v) : n; }
+      rebuild(); }
     else updateLabels(); };
   inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
   inp.addEventListener('blur', () => done(true));
@@ -325,14 +332,22 @@ function handlePointerDown(e) {
   const H = hit.object.userData.handle; const n = hTarget; const point = H.mesh.position.clone();
   const planeH = dragPlaneFor(H, n, point); const start = ray.ray.intersectPlane(planeH, new THREE.Vector3()); if (!start) return false;
   commit(); orbit.enabled = false; hit.object.material = hMat.hot;
-  hDrag = { H, id: n.id, start, plane: planeH, startNode: structuredClone(n), box: C.localBox(n), uniform: e.shiftKey }; e.preventDefault(); return true;
+  hDrag = { H, id: n.id, start, plane: planeH, startNode: structuredClone(n), cur: n, box: n.virtual ? C.bbox(selected()) : C.localBox(n), starts: selected().map(x => structuredClone(x)), uniform: e.shiftKey }; e.preventDefault(); return true;
 }
 function applyHandleDrag(worldDelta, mods = {}) {
-  const { H, startNode, box } = hDrag; const i = nodes.findIndex(x => x.id === hDrag.id); if (i < 0) return;
-  hDrag.uniform = !!mods.shift;
+  const { H, startNode, box } = hDrag; hDrag.uniform = !!mods.shift;
+  if (startNode.virtual) {
+    let out, v;
+    if (H.kind === 'lift') { const dz = snapV(worldDelta.z); v = { ...startNode, pos: [0, 0, dz] }; out = C.applyVirtual(hDrag.starts, v); }
+    else ({ nodes: out, virtual: v } = C.resizeMany(hDrag.starts, H.h, worldDelta.toArray(), { uniform: !!mods.shift, centre: !!mods.alt, snap }, box));
+    hDrag.cur = v; out.forEach(x => { nodes[nodes.findIndex(y => y.id === x.id)] = x; const m = meshes.get(x.id); if (m) m.matrix.copy(C.nodeMatrix(x)); });
+    updateHandles(); renderProps(true); updateRuler(); return;
+  }
+  const i = nodes.findIndex(x => x.id === hDrag.id); if (i < 0) return;
   if (H.kind === 'lift') { const n = structuredClone(startNode); n.pos[2] = Math.round((startNode.pos[2] + snapV(worldDelta.z)) * 1e4) / 1e4; nodes[i] = n; }
   else { const d = worldDelta.clone().applyQuaternion(C.nodeQuat(startNode).invert());
     nodes[i] = C.resizeNode(startNode, H.h, d.toArray(), { uniform: !!mods.shift, centre: !!mods.alt, snap, keepOnPlane: true }, box); }
+  hDrag.cur = nodes[i];
   const m = meshes.get(hDrag.id); if (m) { m.matrix.copy(C.nodeMatrix(nodes[i])); }
   updateHandles(); renderProps(true); updateRuler();
 }
@@ -409,9 +424,15 @@ window.__smoke = async () => { try {
   const ev = (t, x, y, tgt) => (tgt || renderer.domElement).dispatchEvent(new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, button: 0, bubbles: true }));
   ev('pointerdown', sx, sy); const grabbed = !!hDrag; ev('pointermove', tx, ty); ev('pointerup', tx, ty, window);
   const w1 = C.localSize(nodes[0])[0]; const labelsShown = LABELS.filter(L => L.el.style.display === 'block').length;
+  const afterUndoCount = nodes.length;
+  // multi-selection handle drag: two boxes, drag combined +X side by 10mm => combined width +10
+  resetHistory(); nodes = [C.makeNode('box'), C.makeNode('box')]; nodes[1].pos = [30, 0, 0]; sel = nodes.map(x => x.id); rebuild(); tickHandles(); renderer.render(scene, camera);
+  const mw0 = C.bbox(nodes).getSize(new THREE.Vector3()).x; const [ax, ay] = toScreen(Hx.mesh.position); const [bx, by] = toScreen(Hx.mesh.position.clone().add(new THREE.Vector3(10, 0, 0)));
+  ev('pointerdown', ax, ay); const mGrab = !!hDrag; ev('pointermove', bx, by); ev('pointerup', bx, by, window);
+  const mw1 = C.bbox(nodes).getSize(new THREE.Vector3()).x; const multiOk = mGrab && Math.abs(mw1 - mw0 - 10) < 1.01;
   const dirtyTitle = document.title.includes('•'); filePath = '/tmp/localcad-smoke.lcad'; await save(); const savedTitle = document.title;
   const px = renderer.domElement.toDataURL().length;
-  return { ok: wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && nodes.length === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
+  return { ok: multiOk && wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && afterUndoCount === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, multiOk, mw0, mw1, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
 } catch (e) { return { ok: false, error: String(e.stack || e) }; } };
 // deterministic scene for screenshots: one rotated box with handles, fixed camera
 window.__shotScene = () => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; setMode('handles'); rebuild(); home(); orbit.update(); tickHandles(); renderer.render(scene, camera); return true; };
