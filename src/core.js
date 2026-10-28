@@ -190,3 +190,46 @@ export function bbox(nodes) {
   const b = new THREE.Box3(); for (const n of nodes) { const g = worldGeometry(n); g.computeBoundingBox(); b.union(g.boundingBox); } return b;
 }
 export { THREE };
+
+// ---------- direct resize handles (math is DOM-free so it can be unit tested) ----------
+/** Bounding box of a node's geometry in its own (unscaled, unrotated) frame. */
+export function localBox(n) { const g = localGeometry(n); g.computeBoundingBox(); return g.boundingBox.clone(); }
+/** Rotation-only quaternion of a node. */
+export function nodeQuat(n) { const d = THREE.MathUtils.degToRad; return new THREE.Quaternion().setFromEuler(new THREE.Euler(d(n.rot[0]), d(n.rot[1]), d(n.rot[2]))); }
+/** Current size (mm) along the node's local axes. */
+export function localSize(n, box = localBox(n)) { const s = box.getSize(new THREE.Vector3()).toArray(); return s.map((v, i) => Math.abs(v * n.scale[i])); }
+/** World position of a local-box point given by signs h (-1 min, 0 centre, +1 max). */
+export function handlePoint(n, h, box = localBox(n)) {
+  const p = [0, 1, 2].map(i => (h[i] < 0 ? box.min.getComponent(i) : h[i] > 0 ? box.max.getComponent(i) : (box.min.getComponent(i) + box.max.getComponent(i)) / 2));
+  return new THREE.Vector3(...p).applyMatrix4(nodeMatrix(n));
+}
+/**
+ * Resize like a bounding-box handle drag.
+ * start: node at drag start. h: handle signs per local axis (0 = axis not driven).
+ * dLocal: drag delta (mm) expressed in the node's rotated local frame.
+ * opts: { uniform, centre, snap, min }. Opposite face stays anchored (or centre when opts.centre).
+ */
+export function resizeNode(start, h, dLocal, opts = {}, box = localBox(start)) {
+  const { uniform = false, centre = false, snap = 0, min = 0.1 } = opts;
+  const size = localSize(start, box); const want = size.slice();
+  for (let i = 0; i < 3; i++) if (h[i]) {
+    let v = size[i] + h[i] * dLocal[i] * (centre ? 2 : 1);
+    if (snap) v = Math.round(v / snap) * snap;
+    want[i] = Math.max(min, v);
+  }
+  let ratio = want.map((v, i) => (size[i] > 1e-9 ? v / size[i] : 1));
+  if (uniform) { const act = [0, 1, 2].filter(i => h[i]); const f = act.reduce((a, i) => (Math.abs(ratio[i] - 1) > Math.abs(a - 1) ? ratio[i] : a), 1); ratio = [f, f, f]; }
+  const n = structuredClone(start);
+  n.scale = start.scale.map((s, i) => round(s * ratio[i]));
+  // anchor point in unscaled local coords: opposite side of each driven axis, centre otherwise
+  const a = [0, 1, 2].map(i => (centre || !h[i] ? (box.min.getComponent(i) + box.max.getComponent(i)) / 2 : h[i] > 0 ? box.min.getComponent(i) : box.max.getComponent(i)));
+  if (uniform && !centre) for (let i = 0; i < 3; i++) if (!h[i]) a[i] = i === 2 ? box.min.getComponent(2) : a[i]; // uniform grows upward from the base
+  const shift = new THREE.Vector3(...a.map((v, i) => v * (start.scale[i] - n.scale[i]))).applyQuaternion(nodeQuat(start));
+  n.pos = start.pos.map((p, i) => round(p + shift.getComponent(i)));
+  return n;
+}
+/** Set an exact size along one local axis (used by clickable dimension labels). */
+export function setLocalSize(start, axis, value, opts = {}) {
+  const size = localSize(start); const h = [0, 0, 0]; h[axis] = 1; const d = [0, 0, 0]; d[axis] = value - size[axis];
+  return resizeNode(start, h, d, { ...opts, snap: 0 });
+}

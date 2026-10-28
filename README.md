@@ -31,7 +31,11 @@ Building on the Mac itself also ad-hoc signs the app automatically.
 - **Workplane**: 200×200 mm grid (1 mm minor / 10 mm major), Z up, units mm. Snap grid selector in toolbar (off/0.5/1/5/10 mm).
 - **Select**: left-click; Shift+click multi-select; Ctrl/⌘+A all; Esc clear. Left-drag a shape to slide it on the workplane.
 - **Camera**: right-drag orbit, middle-drag pan, wheel zoom; view cube (click faces/edges/corners), Home, Fit (F).
-- **Gizmo**: Move (W) / Rotate (E) / Scale (R) buttons.
+- **Resize handles (default, Q)**: selecting a shape shows Tinkercad-style handles on its bounding box (local axes, so they follow rotation; works on groups too):
+  white corners resize X+Y with the opposite corner anchored, black side handles resize one axis, the white top handle sets height, and the blue cone above lifts the shape off the workplane.
+  Hold **Shift** for uniform scaling and **Alt/Option** to resize from the centre; sizes snap to the grid setting. Live mm labels appear on the box. Click a label to type an exact value (Enter to apply, Esc to cancel).
+  Drag the shape body to move it on the plane.
+- **Gizmo**: Move (W) / Rotate (E) / Scale (R) buttons switch to arrow/ring gizmos; Q returns to resize handles.
 - **Shape inspector** (right): Solid/Hole, colour, numeric position, size (W/D/H mm), rotation, shape parameters (radius, sides, text…), align, mirror, lock, hide.
 - **Group** combines selected shapes with real CSG: solids are unioned, holes subtracted. Ungroup restores the parts.
 - **Files**: Save/Open projects as `.lcad` (JSON). Import STL (binary/ASCII) and OBJ. Export STL/OBJ of selection, or the whole scene if nothing is selected (holes are never exported).

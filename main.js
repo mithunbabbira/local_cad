@@ -9,7 +9,7 @@ function create() {
   if (process.env.LOCALCAD_SMOKE) win.webContents.on('did-finish-load', async () => {
     setTimeout(async () => {
       const r = await win.webContents.executeJavaScript('window.__smoke && window.__smoke()');
-      console.log('SMOKE_RESULT ' + JSON.stringify(r)); if (process.env.LOCALCAD_SHOT) fs.writeFileSync(process.env.LOCALCAD_SHOT, (await win.webContents.capturePage()).toPNG()); app.exit(r && r.ok ? 0 : 1);
+      console.log('SMOKE_RESULT ' + JSON.stringify(r)); if (process.env.LOCALCAD_SHOT) await new Promise(r => setTimeout(r, 500)); if (process.env.LOCALCAD_SHOT) fs.writeFileSync(process.env.LOCALCAD_SHOT, (await win.webContents.capturePage()).toPNG()); app.exit(r && r.ok ? 0 : 1);
     }, 1500);
   });
 }
