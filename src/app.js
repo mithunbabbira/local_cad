@@ -55,7 +55,15 @@ plate.position.z = -0.05; plane.add(plate);
 const minor = new THREE.GridHelper(200, 200, '#b9cbe2', '#b9cbe2'); minor.rotation.x = Math.PI / 2; plane.add(minor);
 const major = new THREE.GridHelper(200, 20, '#6c8fbf', '#8fabd0'); major.rotation.x = Math.PI / 2; major.position.z = 0.02; plane.add(major);
 const axes = new THREE.AxesHelper(25); axes.position.z = 0.05; plane.add(axes);
+let wp = new THREE.Matrix4(); // custom workplane frame (identity = default grid)
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+plane.matrixAutoUpdate = false;
+function setWorkplane(m) { wp = m.clone(); plane.matrix.copy(wp); plane.matrixWorldNeedsUpdate = true;
+  const nrm = new THREE.Vector3().setFromMatrixColumn(wp, 2).normalize(); groundPlane.setFromNormalAndCoplanarPoint(nrm, new THREE.Vector3().setFromMatrixPosition(wp));
+  plate.material.color.set(isDefaultWP() ? '#d6e4f5' : '#f3e2b3'); settings.workplane = isDefaultWP() ? null : wp.toArray(); }
+const isDefaultWP = () => wp.equals(new THREE.Matrix4());
+const toWP = v => v.clone().applyMatrix4(wp.clone().invert()), fromWP = v => v.clone().applyMatrix4(wp);
+const wpDir = v => v.clone().transformDirection(wp).multiplyScalar(v.length());
 
 // gizmo
 const tc = new TransformControls(camera, renderer.domElement); scene.add(tc.getHelper ? tc.getHelper() : tc);
@@ -105,14 +113,15 @@ for (const [type, label, hole] of lib) {
   const d = document.createElement('div'); d.className = 'shape'; d.draggable = true;
   d.innerHTML = `<div style="font-size:22px;color:${hole ? '#889' : C.SHAPES[type].color}">${hole ? ICONS['hole_' + type] : ICONS[type]}</div>${label}`;
   d.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', JSON.stringify([type, hole])));
-  d.addEventListener('click', () => addShape(type, hole, new THREE.Vector3((nodes.length % 5) * 25 - 50, 0, 0)));
+  d.addEventListener('click', () => addShape(type, hole, fromWP(new THREE.Vector3((nodes.length % 5) * 25 - 50, 0, 0))));
   $('#shapes').appendChild(d);
 }
 view.addEventListener('dragover', e => e.preventDefault());
 view.addEventListener('drop', e => { e.preventDefault(); const [t, h] = JSON.parse(e.dataTransfer.getData('text/plain')); addShape(t, h, groundPoint(e) || new THREE.Vector3()); });
 function addShape(type, hole, at) {
   commit(); const n = C.makeNode(type, { hole }); if (hole) n.name += ' (hole)';
-  n.pos = [snapV(at.x), snapV(at.y), 0]; nodes.push(n); sel = [n.id]; rebuild(); status(`Added ${n.name}`);
+  const l = toWP(at); const w = fromWP(new THREE.Vector3(snapV(l.x), snapV(l.y), 0));
+  C.setNodeMatrix(n, new THREE.Matrix4().extractRotation(wp).setPosition(w)); nodes.push(n); sel = [n.id]; rebuild(); status(`Added ${n.name}`);
 }
 const snapV = v => (snap ? Math.round(v / snap) * snap : Math.round(v * 100) / 100);
 
@@ -123,6 +132,7 @@ function groundPoint(e) { setNdc(e); return ray.ray.intersectPlane(groundPlane, 
 let down = null, planeDrag = null;
 renderer.domElement.addEventListener('pointerdown', e => {
   if (e.button !== 0 || tc.dragging || tc.axis) return; down = [e.clientX, e.clientY];
+  if (pickMode) { onPickClick(e); return; }
   if (handlePointerDown(e)) return;
   setNdc(e); const hit = ray.intersectObjects([...meshes.values()].filter(m => m.visible), false)[0];
   if (hit) {
@@ -137,8 +147,8 @@ renderer.domElement.addEventListener('pointerdown', e => {
 renderer.domElement.addEventListener('pointermove', e => {
   if (!planeDrag || !planeDrag.start) return; const p = groundPoint(e); if (!p) return;
   if (!planeDrag.moved) { commit(); planeDrag.moved = true; }
-  const dx = snapV(p.x - planeDrag.start.x), dy = snapV(p.y - planeDrag.start.y);
-  selected().filter(n => !n.locked).forEach((n, i) => { n.pos[0] = planeDrag.orig[i][0] + dx; n.pos[1] = planeDrag.orig[i][1] + dy; meshes.get(n.id).matrix.copy(C.nodeMatrix(n)); });
+  const l = toWP(p).sub(toWP(planeDrag.start)); const dW = wpDir(new THREE.Vector3(snapV(l.x), snapV(l.y), 0));
+  selected().filter(n => !n.locked).forEach((n, i) => { n.pos = planeDrag.orig[i].map((v, k) => Math.round((v + dW.getComponent(k)) * 1e4) / 1e4); meshes.get(n.id).matrix.copy(C.nodeMatrix(n)); });
   renderProps(true); updateRuler(); updateHandles();
 });
 addEventListener('pointerup', () => { if (planeDrag) { orbit.enabled = true; if (planeDrag.moved) rebuild(); planeDrag = null; } });
@@ -213,7 +223,7 @@ function mirror(i) {
   const m = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z).multiply(new THREE.Matrix4().makeScale(...[0, 1, 2].map(k => (k === i ? -1 : 1)))).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
   s.forEach(n => C.setNodeMatrix(n, m.clone().multiply(C.nodeMatrix(n)))); rebuild();
 }
-function drop() { const s = selected(); if (!s.length) return; commit(); s.forEach(n => (n.pos[2] -= C.bbox([n]).min.z)); rebuild(); }
+function drop() { const s = selected(); if (!s.length) return; commit(); C.dropToFrame(s, wp).forEach(x => (nodes[nodes.findIndex(y => y.id === x.id)] = x)); rebuild(); }
 function nudge(i, d) { const s = selected().filter(n => !n.locked); if (!s.length) return; commit(); s.forEach(n => (n.pos[i] = Math.round((n.pos[i] + d) * 1e4) / 1e4)); rebuild(); }
 function hide() { if (!sel.length) return; commit(); selected().forEach(n => (n.hidden = true)); sel = []; rebuild(); }
 function showAll() { commit(); nodes.forEach(n => (n.hidden = false)); rebuild(); }
@@ -246,7 +256,7 @@ const ortho = document.createElement('label'); $('#viewcube').appendChild(ortho)
 
 function resize() { const r = view.getBoundingClientRect(); renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
 addEventListener('resize', resize); resize();
-function loop() { requestAnimationFrame(loop); orbit.update(); tickHandles(); renderer.render(scene, camera);
+function loop() { requestAnimationFrame(loop); orbit.update(); tickHandles(); updateRulerLabels(); renderer.render(scene, camera);
   const d = camera.position.clone().sub(orbit.target).normalize().multiplyScalar(4); cubeCam.position.copy(d); cubeCam.up.copy(camera.up); cubeCam.lookAt(0, 0, 0); cubeR.render(cubeScene, cubeCam); } requestAnimationFrame(loop);
 
 
@@ -395,9 +405,52 @@ renderer.domElement.addEventListener('pointermove', e => { if (!hDrag) return; s
   applyHandleDrag(p.sub(hDrag.start), { shift: e.shiftKey, alt: e.altKey }); });
 addEventListener('pointerup', () => { if (!hDrag) return; if (rDrag) { rDrag.H.pick[0].material = rDrag.H.pick[1].material; rDrag = null; angleLabel.style.display = 'none'; } else hDrag.H.mesh.material = hMat[hDrag.H.kind]; hDrag = null; orbit.enabled = true; rebuild(); });
 
+// ---------- custom workplane (W) and ruler (R) ----------
+let pickMode = null, ruler = null; // ruler: { frame: Matrix4 }
+function startPick(kind) { pickMode = kind; renderer.domElement.style.cursor = 'crosshair'; status(kind === 'workplane' ? 'Workplane: click a surface to place it, or click the empty grid to reset (Esc cancels)' : 'Ruler: click the workplane to place the ruler origin (Esc cancels)'); }
+function endPick() { pickMode = null; renderer.domElement.style.cursor = ''; updateRuler(); }
+function onPickClick(e) {
+  setNdc(e); const kind = pickMode; endPick();
+  if (kind === 'workplane') {
+    const hit = ray.intersectObjects([...meshes.values()].filter(m => m.visible), false)[0];
+    if (!hit) { setWorkplane(new THREE.Matrix4()); return status('Workplane reset to the default grid'); }
+    const nrm = hit.face.normal.clone().transformDirection(hit.object.matrixWorld); setWorkplane(C.frameFromSurface(hit.point.toArray(), nrm.toArray())); return status('Workplane placed on surface (W, then click empty space to reset)');
+  }
+  const p = ray.ray.intersectPlane(groundPlane, new THREE.Vector3()); if (!p) return; const l = toWP(p);
+  placeRuler(fromWP(new THREE.Vector3(snapV(l.x), snapV(l.y), 0)));
+}
+const rulerObj = new THREE.Group(); rulerObj.visible = false; rulerObj.matrixAutoUpdate = false; scene.add(rulerObj);
+{ const mat = new THREE.LineBasicMaterial({ color: '#1b2430', depthTest: false }); const pts = [];
+  for (const ax of [0, 1]) { const e = [0, 0, 0]; e[ax] = 100; pts.push(0, 0, 0, ...e); for (let t = 10; t <= 100; t += 10) { const a = [0, 0, 0]; a[ax] = t; const b = a.slice(); b[1 - ax] = t % 50 ? -2 : -4; pts.push(...a, ...b); } }
+  const g = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); const l = new THREE.LineSegments(g, mat); l.renderOrder = 12; rulerObj.add(l);
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(1.6, 24), new THREE.MeshBasicMaterial({ color: '#1e6fd9', depthTest: false })); dot.renderOrder = 12; rulerObj.add(dot); }
+const rLabels = ['x', 'y', 'z'].map((axis, i) => { const el = document.createElement('div'); el.className = 'dimlabel ruler'; el.style.pointerEvents = 'auto'; el.style.display = 'none'; labelLayer.appendChild(el);
+  el.addEventListener('pointerdown', e => e.stopPropagation()); el.addEventListener('click', () => editRulerLabel(i, el)); return el; });
+function placeRuler(at) { ruler = { frame: new THREE.Matrix4().extractRotation(wp).setPosition(at) }; rulerObj.matrix.copy(ruler.frame); rulerObj.matrixWorldNeedsUpdate = true; rulerObj.visible = true; status('Ruler placed – distances from the ruler are shown for the selection (click a value to type it). R removes it.'); }
+function toggleRuler() { if (ruler) { ruler = null; rulerObj.visible = false; rLabels.forEach(l => (l.style.display = 'none')); status('Ruler removed'); } else startPick('ruler'); }
+function rulerBox() { const s = selected(); return s.length && ruler ? C.boxInFrame(s, ruler.frame) : null; }
+let rulerBoxCache = null, rulerKey = '';
+function updateRulerLabels() {
+  if (!ruler) return; const s = selected(); const key = JSON.stringify(s.map(n => [n.id, n.pos, n.rot, n.scale, C.geoKey(n)]));
+  if (key !== rulerKey) { rulerKey = key; rulerBoxCache = rulerBox(); } const b = rulerBoxCache;
+  rLabels.forEach((el, i) => {
+    if (!b || el.querySelector('input')) { if (!b) el.style.display = 'none'; return; }
+    const v = b.min.getComponent(i); const p = [0, 0, 0]; if (i === 2) { p[0] = b.min.x; p[1] = b.min.y; p[2] = v / 2; } else { p[i] = v / 2; p[1 - i] = -8; }
+    const [x, y, z] = toScreen(new THREE.Vector3(...p).applyMatrix4(ruler.frame));
+    el.style.display = z < 1 && (i < 2 || Math.abs(v) > 1e-3) ? 'block' : 'none'; el.style.left = x + 'px'; el.style.top = y + 'px'; el.textContent = 'XYZ'[i] + ' ' + (+v.toFixed(2)) + ' mm';
+  });
+}
+function editRulerLabel(i, el) {
+  const b = rulerBox(); if (!b) return; const inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.value = +b.min.getComponent(i).toFixed(3); el.textContent = ''; el.appendChild(inp); inp.focus(); inp.select();
+  const done = ok => { if (!inp.isConnected) return; const v = parseFloat(inp.value); inp.remove(); rulerKey = '';
+    if (ok && isFinite(v)) { commit(); const d = new THREE.Vector3().setComponent(i, v - b.min.getComponent(i)).transformDirection(ruler.frame).multiplyScalar(Math.abs(v - b.min.getComponent(i)));
+      selected().forEach(n => (n.pos = n.pos.map((p, k) => Math.round((p + d.getComponent(k)) * 1e4) / 1e4))); rebuild(); } };
+  inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); }); inp.addEventListener('blur', () => done(true));
+}
+
 // ---------- settings / clipboard (filled in later) ----------
 let settings = {};
-function applySettings(s) { settings = { ...settings, ...s }; }
+function applySettings(s) { settings = { ...settings, ...s }; setWorkplane(settings.workplane ? new THREE.Matrix4().fromArray(settings.workplane) : new THREE.Matrix4()); }
 function copySel() {}
 function paste() {}
 
@@ -423,7 +476,7 @@ async function newDoc() { if (!(await okToDiscard())) return; resetHistory(); no
 function inField() { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT'); }
 function toggleLock() { if (!sel.length) return; commit(); const l = !selected().every(n => n.locked); selected().forEach(n => (n.locked = l)); rebuild(); }
 function selectAll() { if (inField()) return document.execCommand('selectAll'); sel = nodes.filter(n => !n.hidden).map(n => n.id); rebuild(); }
-const actions = { new: newDoc, open, save, saveas: saveAs, 'save-and-close': async () => { if (await save()) native.closeNow(); }, lock: toggleLock, hide, showall: showAll, selectall: selectAll,
+const actions = { workplane: () => startPick('workplane'), ruler: () => toggleRuler(), new: newDoc, open, save, saveas: saveAs, 'save-and-close': async () => { if (await save()) native.closeNow(); }, lock: toggleLock, hide, showall: showAll, selectall: selectAll,
   copy: () => (inField() ? document.execCommand('copy') : copySel()), cut: () => (inField() ? document.execCommand('cut') : (copySel(), del())), paste: () => (inField() ? document.execCommand('paste') : paste()),
   import: importMesh, exportstl: () => exportFile('stl'), exportobj: () => exportFile('obj'), undo, redo, duplicate, delete: del, group, ungroup };
 native.onMenu(c => actions[c] && actions[c]());
@@ -443,8 +496,8 @@ addEventListener('keydown', e => {
   else if (k === 'arrowleft') nudge(0, -step); else if (k === 'arrowright') nudge(0, step);
   else if (k === 'arrowup') nudge(1, step); else if (k === 'arrowdown') nudge(1, -step);
   else if (k === 'h') setHole(true); else if (k === 's') setHole(false);
-  else if (k === 'd') drop(); else if (k === 'f') fit(); else if (k === 'escape') { sel = []; rebuild(); }
-  else if (k === 'q') setMode('handles'); else if (k === 'w') setMode('translate'); else if (k === 'e') setMode('rotate'); else if (k === 'r') setMode('scale');
+  else if (k === 'd') drop(); else if (k === 'f') fit(); else if (k === 'escape') { if (pickMode) endPick(); else { sel = []; rebuild(); } }
+  else if (k === 'q') setMode('handles'); else if (k === 't') setMode('translate'); else if (k === 'e') setMode('rotate'); else if (k === 'w') startPick('workplane'); else if (k === 'r') toggleRuler();
   else if (k === 'm') mirror(0); else if (k === 'l') align('x', 'mid');
 });
 setDirty(false); rebuild(); home();
@@ -458,13 +511,21 @@ window.__smoke = async () => { try {
   duplicate(); undo(); const selRestored = sel.length === 1 && sel[0] === g.id; ungroup(); const n = nodes.length; undo();
   const stl = C.syncCSG(() => C.toSTL(nodes)); renderer.render(scene, camera);
   // handle drag via real pointer events: drag the +X side handle of the selected group by ~+10mm
-  sel = [nodes[0].id]; setMode('handles'); rebuild(); fly(new THREE.Vector3(0, 0, 1), 250); orbit.target.set(0, 0, 0); orbit.update(); tickHandles(); renderer.render(scene, camera);
+  sel = [nodes[0].id]; setMode('handles'); rebuild(); fly(new THREE.Vector3(0, 0, 1), 250); orbit.target.set(0, 0, 0); orbit.update(); tickHandles(); updateRulerLabels(); renderer.render(scene, camera);
   const w0 = C.localSize(nodes[0])[0]; const Hx = HANDLES[4]; const r = renderer.domElement.getBoundingClientRect();
   const [sx, sy] = toScreen(Hx.mesh.position); const [tx, ty] = toScreen(Hx.mesh.position.clone().add(new THREE.Vector3(10, 0, 0)));
   const ev = (t, x, y, tgt) => (tgt || renderer.domElement).dispatchEvent(new PointerEvent(t, { clientX: r.left + x, clientY: r.top + y, button: 0, bubbles: true }));
   ev('pointerdown', sx, sy); const grabbed = !!hDrag; ev('pointermove', tx, ty); ev('pointerup', tx, ty, window);
   const w1 = C.localSize(nodes[0])[0]; const labelsShown = LABELS.filter(L => L.el.style.display === 'block').length;
   const afterUndoCount = nodes.length;
+  // custom workplane: click the top face of a box, add a shape -> it sits on top (z = 20)
+  resetHistory(); nodes = [C.makeNode('box')]; sel = []; rebuild(); renderer.render(scene, camera);
+  const [wx, wy] = toScreen(new THREE.Vector3(0, 0, 20)); startPick('workplane'); ev('pointerdown', wx, wy); ev('pointerup', wx, wy, window);
+  addShape('cylinder', false, fromWP(new THREE.Vector3(0, 0, 0))); const wpZ = C.bbox([nodes[1]]).min.z;
+  startPick('workplane'); const [ex, ey] = toScreen(new THREE.Vector3(150, 150, 0)); ev('pointerdown', ex, ey); ev('pointerup', ex, ey, window); const wpReset = isDefaultWP();
+  // ruler at origin, select the box moved to x=30 -> ruler X distance = 20
+  nodes[0].pos = [30, 0, 0]; sel = [nodes[0].id]; rebuild(); placeRuler(new THREE.Vector3(0, 0, 0)); rulerKey = ''; updateRulerLabels(); const rulerText = rLabels[0].textContent; toggleRuler();
+  const wpOk = Math.abs(wpZ - 20) < 1e-3 && wpReset && rulerText === 'X 20 mm';
   // rotation arrow drag (Z): sweep ~30° around the centre -> snaps to 22.5°
   resetHistory(); nodes = [C.makeNode('box')]; sel = [nodes[0].id]; rebuild(); tickHandles(); renderer.render(scene, camera);
   const RZ = HANDLES.find(x => x.kind === 'rot' && x.axis === 2); const rg = rotGeom(RZ, C.nodeQuat(nodes[0]), C.handlePoint(nodes[0], [0, 0, 0], C.localBox(nodes[0])), C.localSize(nodes[0]));
@@ -479,7 +540,7 @@ window.__smoke = async () => { try {
   const mw1 = C.bbox(nodes).getSize(new THREE.Vector3()).x; const multiOk = mGrab && Math.abs(mw1 - mw0 - 10) < 1.01;
   const dirtyTitle = document.title.includes('•'); filePath = '/tmp/localcad-smoke.lcad'; await save(); const savedTitle = document.title;
   const px = renderer.domElement.toDataURL().length;
-  return { ok: rotOk && multiOk && wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && afterUndoCount === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, rotOk, rotZ, multiOk, mw0, mw1, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
+  return { ok: wpOk && rotOk && multiOk && wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && afterUndoCount === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, wpOk, wpZ, wpReset, rulerText, rotOk, rotZ, multiOk, mw0, mw1, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
 } catch (e) { return { ok: false, error: String(e.stack || e) }; } };
 // deterministic scene for screenshots: one rotated box with handles, fixed camera
-window.__shotScene = () => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; setMode('handles'); rebuild(); home(); orbit.update(); tickHandles(); renderer.render(scene, camera); return true; };
+window.__shotScene = () => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; setMode('handles'); rebuild(); home(); orbit.update(); tickHandles(); updateRulerLabels(); renderer.render(scene, camera); return true; };

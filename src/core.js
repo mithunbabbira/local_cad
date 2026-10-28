@@ -297,3 +297,21 @@ export function rotateAbout(starts, center, axis, deg) {
   const R = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z).multiply(new THREE.Matrix4().makeRotationAxis(a, THREE.MathUtils.degToRad(deg))).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
   return starts.map(n => { const o = structuredClone(n); setNodeMatrix(o, R.clone().multiply(nodeMatrix(n))); return o; });
 }
+
+/** Axis-aligned box of nodes measured in another frame (e.g. a custom workplane). frame: Matrix4 world<-frame. */
+export function boxInFrame(nodes, frame) {
+  const inv = frame.clone().invert(), b = new THREE.Box3(), v = new THREE.Vector3();
+  for (const n of nodes) { const a = worldGeometry(n).attributes.position.array; for (let i = 0; i < a.length; i += 3) b.expandByPoint(v.set(a[i], a[i + 1], a[i + 2]).applyMatrix4(inv)); }
+  return b;
+}
+/** Workplane frame from a surface point + normal; X follows the world X axis projected onto the plane. */
+export function frameFromSurface(point, normal) {
+  const z = new THREE.Vector3(...normal).normalize(); let x = new THREE.Vector3(1, 0, 0).sub(z.clone().multiplyScalar(z.x));
+  if (x.lengthSq() < 1e-6) x = new THREE.Vector3(0, 1, 0).sub(z.clone().multiplyScalar(z.y)); x.normalize();
+  const y = new THREE.Vector3().crossVectors(z, x); return new THREE.Matrix4().makeBasis(x, y, z).setPosition(...point);
+}
+/** Move nodes so their lowest point (along the frame's Z) sits on the frame plane. */
+export function dropToFrame(nodes, frame) {
+  return nodes.map(n => { const b = boxInFrame([n], frame); const zAxis = new THREE.Vector3().setFromMatrixColumn(frame, 2).normalize();
+    const o = structuredClone(n); o.pos = n.pos.map((p, i) => round(p - zAxis.getComponent(i) * b.min.z)); return o; });
+}

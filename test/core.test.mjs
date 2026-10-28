@@ -94,4 +94,11 @@ t('rotateAbout keeps the centre fixed and rotates about the axis', () => {
 t('rotateAbout on several nodes rotates them as one', () => {
   const a = C.makeNode('box'), b = C.makeNode('box'); b.pos = [40, 0, 0];
   const out = C.rotateAbout([a, b], [20, 0, 10], [0, 0, 1], 180); near(out[0].pos[0], 40); near(out[1].pos[0], 0); });
+t('workplane frame from a surface + drop onto it', () => {
+  const F = C.frameFromSurface([0, -10, 10], [0, -1, 0]);  // front face of a 20mm box
+  const z = new (C.THREE.Vector3)().setFromMatrixColumn(F, 2); near(z.y, -1);
+  const s = C.makeNode('sphere'); s.pos = [0, -40, 0]; const [d] = C.dropToFrame([s], F);
+  const b = C.boxInFrame([d], F); near(b.min.z, 0); });
+t('boxInFrame equals world bbox for identity frame (ruler distances)', () => {
+  const b = C.makeNode('box'); b.pos = [15, 5, 3]; const bb = C.boxInFrame([b], new (C.THREE.Matrix4)()); near(bb.min.x, 5); near(bb.min.y, -5); near(bb.min.z, 3); });
 console.log(`\n${pass} tests passed`);
