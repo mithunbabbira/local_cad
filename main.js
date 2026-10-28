@@ -15,6 +15,9 @@ function create() {
   win.webContents.on('did-finish-load', async () => {
     const f = pendingOpen || process.argv.slice(1).find(a => /\.lcad$/i.test(a)); if (f) { pendingOpen = null; openPath(f); }
     if (!process.env.LOCALCAD_SMOKE) return;
+    // deterministic smoke run: fixed viewport, no stale save file, default settings
+    win.setContentSize(1280, 800); try { fs.rmSync('/tmp/localcad-smoke.lcad', { force: true }); } catch {}
+    await win.webContents.executeJavaScript('localStorage.clear()');
     let r; try { r = await win.webContents.executeJavaScript('window.__smoke()'); } catch (e) { r = { ok: false, error: String(e.message) }; }
     if (r && r.ok && !fs.existsSync('/tmp/localcad-smoke.lcad')) { r.ok = false; r.error = 'save file missing'; }
     console.log('SMOKE_RESULT ' + JSON.stringify(r));

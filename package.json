@@ -6,8 +6,8 @@
   "scripts": {
     "build": "node build.mjs",
     "start": "node build.mjs && electron .",
-    "test": "node build.mjs && node test/core.test.mjs",
-    "smoke": "node build.mjs && LOCALCAD_SMOKE=1 electron . --no-sandbox --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader",
+    "test": "node build.mjs && node test/core.test.mjs && node test/ui.test.mjs",
+    "smoke": "node build.mjs && LOCALCAD_SMOKE=1 electron . --no-sandbox --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --force-device-scale-factor=1",
     "dist": "node build.mjs && electron-builder --mac zip --x64 --arm64",
     "dist:dmg": "node build.mjs && electron-builder --mac dmg --x64 --arm64"
   },

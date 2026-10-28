@@ -2,39 +2,34 @@ import * as C from './core.js';
 import { THREE } from './core.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { History } from './ui/history.js';
+import { duplicateSelection } from './ui/duplicate.js';
+import { importFile } from './ui/importer.js';
+import { keyAction } from './ui/keymap.js';
+import { gridGeom } from './ui/grid.js';
+import { startCsgWorker } from './ui/csg-client.js';
 
 const $ = s => document.querySelector(s);
 const view = $('#view'), status = m => ($('#status').textContent = m);
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
 // ---------- state ----------
-let dirty = false, mode = 'handles', nodes = [], sel = [], undoStack = [], redoStack = [], lastDup = null, snap = 1, filePath = null;
+let dirty = false, mode = 'handles', nodes = [], sel = [], lastDup = null, snap = 1, filePath = null; const history = new History(200);
 // History entries capture nodes *and* the selection so undo/redo restores what was selected.
 const snapshot = () => JSON.stringify({ nodes, sel });
 function restore(snap) { const d = JSON.parse(snap); nodes = d.nodes; sel = d.sel || []; keepSel(); rebuild(); }
-function commit() { undoStack.push(snapshot()); if (undoStack.length > 200) undoStack.shift(); redoStack = []; setDirty(true); }
-function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); setDirty(true); }
-function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); setDirty(true); }
-function resetHistory() { undoStack = []; redoStack = []; lastDup = null; }
+function commit() { history.push(snapshot()); setDirty(true); }
+function undo() { const s = history.undo(snapshot()); if (s) { restore(s); setDirty(true); } }
+function redo() { const s = history.redo(snapshot()); if (s) { restore(s); setDirty(true); } }
+function resetHistory() { history.reset(); lastDup = null; }
 const byId = id => nodes.find(n => n.id === id);
 const selected = () => sel.map(byId).filter(Boolean);
 function keepSel() { sel = sel.filter(byId); }
 
 // ---------- background CSG ----------
-const csgPending = new Map(); let idleWaiters = [];
 const computing = document.createElement('div'); computing.id = 'computing'; computing.textContent = 'Computing…'; document.body.appendChild(computing);
-let csgWorker = null;
-try { csgWorker = new Worker('csg-worker.bundle.js'); } catch (e) { console.warn('CSG worker unavailable, computing on main thread', e); }
-if (csgWorker) {
-  C.csgHooks.async = (n, key) => { if (csgPending.has(key)) return; csgPending.set(key, true); computing.style.display = 'block'; csgWorker.postMessage({ key, node: n }); };
-  csgWorker.onmessage = ({ data }) => {
-    csgPending.delete(data.key);
-    if (data.error) status('CSG error: ' + data.error); else C.cachePut(data.key, C.geometryFromArrays(data.pos, data.nrm, data.col));
-    if (!csgPending.size) { computing.style.display = 'none'; idleWaiters.forEach(f => f()); idleWaiters = []; }
-    rebuild();
-  };
-}
-const whenCsgIdle = () => (csgPending.size ? new Promise(r => idleWaiters.push(r)) : Promise.resolve());
+const csg = startCsgWorker({ url: 'csg-worker.bundle.js', indicator: computing, onResult: () => rebuild(), onError: e => status('CSG error: ' + e) });
+const whenCsgIdle = csg.whenIdle;
 
 // ---------- renderer ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -54,9 +49,6 @@ const plate = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicM
 plate.position.z = -0.05; plane.add(plate);
 const gridLine = (color) => { const l = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color })); plane.add(l); return l; };
 const minor = gridLine('#b9cbe2'), major = gridLine('#6c8fbf'); major.position.z = 0.02;
-function gridGeom(w, d, step) { const p = [], hw = w / 2, hd = d / 2; if (step > 0 && w / step <= 2000 && d / step <= 2000) {
-  for (let x = -hw; x <= hw + 1e-6; x += step) p.push(x, -hd, 0, x, hd, 0); for (let y = -hd; y <= hd + 1e-6; y += step) p.push(-hw, y, 0, hw, y, 0); }
-  return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); }
 function buildPlate(st) { plate.scale.set(st.plateW, st.plateD, 1); minor.geometry.dispose(); minor.geometry = gridGeom(st.plateW, st.plateD, st.grid);
   major.geometry.dispose(); major.geometry = gridGeom(st.plateW, st.plateD, st.major); }
 const axes = new THREE.AxesHelper(25); axes.position.z = 0.05; plane.add(axes);
@@ -202,12 +194,8 @@ function setHole(h) { if (!sel.length) return; commit(); selected().forEach(n =>
 function del() { if (!sel.length) return; commit(); nodes = nodes.filter(n => !sel.includes(n.id) || n.locked); sel = []; rebuild(); }
 function duplicate() {
   const s = selected(); if (!s.length) return; commit();
-  // Duplicate & repeat: if the current selection is the previous duplicate (and it was moved), repeat that transform.
-  let delta = null;
-  if (lastDup && s.length === 1 && s[0].id === lastDup.dup) { const src = byId(lastDup.src); if (src) delta = C.nodeMatrix(s[0]).multiply(C.nodeMatrix(src).invert()); }
-  const copies = s.map(n => { const c = C.cloneNode(n); if (delta) C.setNodeMatrix(c, delta.clone().multiply(C.nodeMatrix(n))); return c; });
-  nodes.push(...copies); lastDup = s.length === 1 ? { src: s[0].id, dup: copies[0].id } : null;
-  sel = copies.map(c => c.id); rebuild(); status(delta ? 'Duplicated with repeated transform' : 'Duplicated – move it, then Ctrl/⌘+D again to repeat');
+  const r = duplicateSelection(s, lastDup, byId); nodes.push(...r.copies); lastDup = r.lastDup;
+  sel = r.copies.map(c => c.id); rebuild(); status(r.repeated ? 'Duplicated with repeated transform' : 'Duplicated – move it, then Ctrl/⌘+D again to repeat');
 }
 function group() {
   const s = selected(); if (s.length < 2) return status('Select 2+ shapes to group'); commit();
@@ -493,9 +481,8 @@ function loadProject(f) { try { const d = C.deserialize(new TextDecoder().decode
   if (d.camera) { camera.position.fromArray(d.camera.pos); orbit.target.fromArray(d.camera.target); } filePath = f.path || null; setDirty(false); rebuild(); status('Opened ' + f.name); } catch (e) { alert('Could not open: ' + e.message); } }
 async function open() { if (!(await okToDiscard())) return; const f = await native.open(['json']); if (f) loadProject(f); }
 native.onOpenData(async f => { if (await okToDiscard()) loadProject(f); });
-async function importMesh() { const f = await native.open(['stl', 'obj']); if (!f) return; const u8 = new Uint8Array(f.data);
-  const pos = /\.obj$/i.test(f.name) ? C.parseOBJ(new TextDecoder().decode(u8)) : C.parseSTL(u8); if (!pos.length) return alert('No triangles found');
-  commit(); const n = C.meshNodeFromPositions(f.name.replace(/\.\w+$/, ''), pos); nodes.push(n); sel = [n.id]; rebuild(); fit(); }
+async function importMesh() { const f = await native.open(['stl', 'obj']); if (!f) return; const n = importFile(f.name, f.data); if (!n) return alert('No triangles found');
+  commit(); nodes.push(n); sel = [n.id]; rebuild(); fit(); }
 async function exportFile(kind) { const s = selected().length ? selected() : nodes; if (!s.filter(n => !n.hole).length) return alert('Nothing solid to export');
   const p = kind === 'stl' ? await native.save({ data: C.syncCSG(() => C.toSTL(s)), kind: 'stl', name: 'design.stl', binary: true }) : await native.save({ data: C.syncCSG(() => C.toOBJ(s)), kind: 'obj', name: 'design.obj' }); if (p) status('Exported ' + p); }
 async function newDoc() { if (!(await okToDiscard())) return; resetHistory(); nodes = []; sel = []; filePath = null; applySettings({ ...loadDefaults(), workplane: null }); setDirty(false); rebuild(); home(); }
@@ -515,21 +502,16 @@ tc.setTranslationSnap(1); tc.setRotationSnap(THREE.MathUtils.degToRad(15)); tc.s
 
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-  const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase(), step = e.shiftKey ? 10 : (snap || 1);
-  if (mod && (k === 'arrowup' || k === 'arrowdown')) { e.preventDefault(); nudge(2, k === 'arrowup' ? step : -step); }
-  else if (mod) return;
-  else if (k === 'delete' || k === 'backspace') del();
-  else if (k === 'arrowleft') nudge(0, -step); else if (k === 'arrowright') nudge(0, step);
-  else if (k === 'arrowup') nudge(1, step); else if (k === 'arrowdown') nudge(1, -step);
-  else if (k === 'h') setHole(true); else if (k === 's') setHole(false);
-  else if (k === 'd') drop(); else if (k === 'f') fit(); else if (k === 'escape') { if (pickMode) endPick(); else { sel = []; rebuild(); } }
-  else if (k === 'q') setMode('handles'); else if (k === 't') setMode('translate'); else if (k === 'e') setMode('rotate'); else if (k === 'w') startPick('workplane'); else if (k === 'r') toggleRuler();
-  else if (k === 'm') mirror(0); else if (k === 'l') align('x', 'mid');
+  const a = keyAction(e, snap); if (!a) return; if (a.action === 'nudge') { e.preventDefault(); return nudge(a.axis, a.amount); }
+  const run = { delete: del, hole: () => setHole(true), solid: () => setHole(false), drop, fit, workplane: () => startPick('workplane'), ruler: toggleRuler,
+    mirror: () => mirror(0), align: () => align('x', 'mid'), escape: () => { if (pickMode) endPick(); else { sel = []; rebuild(); } } };
+  if (a.action.startsWith('mode:')) setMode(a.action.slice(5)); else run[a.action]();
 });
 setDirty(false); rebuild(); home();
 
 // ---------- smoke test hook (used by `npm run smoke`) ----------
 window.__smoke = async () => { try {
+  resetHistory(); nodes = []; sel = []; lastDup = null; filePath = null; clip = []; if (ruler) toggleRuler(); applySettings({ ...C.DEFAULT_SETTINGS, workplane: null }); setDirty(false); home(); rebuild();
   const dirtyStart = dirty;
   addShape('box', false, new THREE.Vector3(0, 0, 0)); addShape('cylinder', true, new THREE.Vector3(10, 0, 0));
   sel = nodes.map(n => n.id); group(); const g = nodes[0]; const wasAsync = C.localGeometry(g).userData.placeholder === true && computing.style.display === 'block';

@@ -62,3 +62,19 @@ Building on the Mac itself also ad-hoc signs the app automatically.
 `main.js` (window, menus, file dialogs) · `preload.js` · `src/core.js` (shapes, CSG, STL/OBJ, project format — DOM-free, unit tested) · `src/app.js` (UI) · `test/` · `build.mjs` (esbuild bundle).
 
 Fonts: Helvetiker typeface JSON from the three.js examples (MIT / font licence in three.js repo).
+
+## Project layout
+
+- `src/core.js` – geometry, CSG, node model, import/export, serialisation (pure, tested in `test/core.test.mjs`).
+- `src/ui/` – UI-side modules: `history.js` (undo/redo with selection), `duplicate.js` (duplicate & repeat), `importer.js` (STL/OBJ import), `keymap.js` (single-key shortcuts), `grid.js`, `csg-client.js` (Web Worker CSG). Tested in `test/ui.test.mjs`.
+- `src/app.js` – viewport, handles, ruler/workplane, inspector and wiring.
+- `src/csg-worker.js` – runs group booleans off the UI thread.
+- `npm test` runs unit tests, `npm run smoke` runs a deterministic end-to-end check in Electron (fixed 1280×800 viewport, cleared settings).
+
+## Releases
+
+Pushing a tag `v*` runs `.github/workflows/release.yml` on a macOS runner, which builds unsigned arm64 and x64 `.dmg` and `.zip` files and attaches them to a GitHub Release. The app is unsigned, so on first launch right-click → Open (or `xattr -dr com.apple.quarantine /Applications/LocalCAD.app`).
+
+## Shortcuts
+
+Q resize handles · T move gizmo · E rotate gizmo · W workplane · R ruler · H hole · S solid · D drop · F fit · M mirror · L align · arrows nudge · ⌘C/⌘X/⌘V · ⌘D duplicate & repeat · ⌘G / ⇧⌘G group/ungroup · ⌘, workplane settings.
