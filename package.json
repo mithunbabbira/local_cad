@@ -1,6 +1,6 @@
 {
   "name": "localcad",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Offline Tinkercad-style 3D CAD",
   "main": "main.js",
   "scripts": {
@@ -66,6 +66,7 @@
         "role": "Editor",
         "mimeType": "application/x-localcad"
       }
-    ]
+    ],
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
   }
 }
