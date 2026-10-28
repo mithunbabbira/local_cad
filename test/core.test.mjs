@@ -101,4 +101,13 @@ t('workplane frame from a surface + drop onto it', () => {
   const b = C.boxInFrame([d], F); near(b.min.z, 0); });
 t('boxInFrame equals world bbox for identity frame (ruler distances)', () => {
   const b = C.makeNode('box'); b.pos = [15, 5, 3]; const bb = C.boxInFrame([b], new (C.THREE.Matrix4)()); near(bb.min.x, 5); near(bb.min.y, -5); near(bb.min.z, 3); });
+t('multicolour group keeps each child colour as vertex colours', () => {
+  const a = C.makeNode('box'); a.color = '#ff0000'; const b = C.makeNode('box'); b.pos = [15, 0, 0]; b.color = '#0000ff';
+  const g = C.groupNodes([a, b]); g.multicolor = true; const geo = C.syncCSG(() => C.localGeometry(g)); const col = geo.attributes.color.array;
+  let red = 0, blue = 0; for (let i = 0; i < col.length; i += 3) { if (col[i] > .9 && col[i + 2] < .1) red++; if (col[i + 2] > .9 && col[i] < .1) blue++; }
+  if (!red || !blue) throw new Error('expected both colours ' + red + ' ' + blue);
+  g.multicolor = false; const plain = C.syncCSG(() => C.localGeometry(g)); if (plain.attributes.color) throw new Error('single-colour group should not carry colours'); });
+t('paste makes fresh ids and offsets', () => {
+  const g = C.groupNodes([C.makeNode('box'), C.makeNode('sphere')]); const [p] = C.pasteNodes([g], [10, 10, 0]);
+  if (p.id === g.id || p.children[0].id === g.children[0].id) throw new Error('ids reused'); near(p.pos[0], g.pos[0] + 10); });
 console.log(`\n${pass} tests passed`);

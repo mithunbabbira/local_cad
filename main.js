@@ -38,7 +38,7 @@ const tpl = [
     item('Select All', 'CmdOrCtrl+A', 'selectall'), { type: 'separator' },
     item('Group', 'CmdOrCtrl+G', 'group'), item('Ungroup', 'CmdOrCtrl+Shift+G', 'ungroup'),
     item('Lock / Unlock', 'CmdOrCtrl+L', 'lock'), item('Hide', 'CmdOrCtrl+Shift+H', 'hide'), item('Show All', 'CmdOrCtrl+Shift+A', 'showall')] },
-  { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' }] }];
+    { label: 'View', submenu: [item('Workplane Settings…', 'CmdOrCtrl+,', 'settings'), { type: 'separator' }, { role: 'toggleDevTools' }, { role: 'reload' }, { role: 'togglefullscreen' }] }];
 app.whenReady().then(() => { Menu.setApplicationMenu(Menu.buildFromTemplate(tpl)); create(); });
 app.on('window-all-closed', () => app.quit());
 app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) create(); });

@@ -29,7 +29,7 @@ if (csgWorker) {
   C.csgHooks.async = (n, key) => { if (csgPending.has(key)) return; csgPending.set(key, true); computing.style.display = 'block'; csgWorker.postMessage({ key, node: n }); };
   csgWorker.onmessage = ({ data }) => {
     csgPending.delete(data.key);
-    if (data.error) status('CSG error: ' + data.error); else C.cachePut(data.key, C.geometryFromArrays(data.pos, data.nrm));
+    if (data.error) status('CSG error: ' + data.error); else C.cachePut(data.key, C.geometryFromArrays(data.pos, data.nrm, data.col));
     if (!csgPending.size) { computing.style.display = 'none'; idleWaiters.forEach(f => f()); idleWaiters = []; }
     rebuild();
   };
@@ -50,10 +50,15 @@ orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.R
 
 // workplane: 200x200 mm, 1mm minor / 10mm major grid, blue plate like a build plate
 const plane = new THREE.Group(); scene.add(plane);
-const plate = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshBasicMaterial({ color: '#d6e4f5', transparent: true, opacity: .85, side: THREE.DoubleSide }));
+const plate = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: '#d6e4f5', transparent: true, opacity: .85, side: THREE.DoubleSide }));
 plate.position.z = -0.05; plane.add(plate);
-const minor = new THREE.GridHelper(200, 200, '#b9cbe2', '#b9cbe2'); minor.rotation.x = Math.PI / 2; plane.add(minor);
-const major = new THREE.GridHelper(200, 20, '#6c8fbf', '#8fabd0'); major.rotation.x = Math.PI / 2; major.position.z = 0.02; plane.add(major);
+const gridLine = (color) => { const l = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color })); plane.add(l); return l; };
+const minor = gridLine('#b9cbe2'), major = gridLine('#6c8fbf'); major.position.z = 0.02;
+function gridGeom(w, d, step) { const p = [], hw = w / 2, hd = d / 2; if (step > 0 && w / step <= 2000 && d / step <= 2000) {
+  for (let x = -hw; x <= hw + 1e-6; x += step) p.push(x, -hd, 0, x, hd, 0); for (let y = -hd; y <= hd + 1e-6; y += step) p.push(-hw, y, 0, hw, y, 0); }
+  return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); }
+function buildPlate(st) { plate.scale.set(st.plateW, st.plateD, 1); minor.geometry.dispose(); minor.geometry = gridGeom(st.plateW, st.plateD, st.grid);
+  major.geometry.dispose(); major.geometry = gridGeom(st.plateW, st.plateD, st.major); }
 const axes = new THREE.AxesHelper(25); axes.position.z = 0.05; plane.add(axes);
 let wp = new THREE.Matrix4(); // custom workplane frame (identity = default grid)
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
@@ -73,7 +78,8 @@ const pivot = new THREE.Object3D(); scene.add(pivot);
 let dragStart = null, pivotStart = null;
 const meshes = new Map(); // id -> Object3D
 
-function material(n) {
+function material(n, geo) {
+  if (!n.hole && n.multicolor && geo && geo.attributes.color) return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .55, metalness: .05, flatShading: true });
   if (n.hole) return new THREE.MeshStandardMaterial({ color: '#9aa4ad', transparent: true, opacity: .45, depthWrite: false, roughness: .6 });
   return new THREE.MeshStandardMaterial({ color: n.color, roughness: .55, metalness: .05, flatShading: n.type !== 'sphere' && n.type !== 'halfsphere' && n.type !== 'torus' });
 }
@@ -81,7 +87,7 @@ function rebuild() {
   for (const m of meshes.values()) scene.remove(m); meshes.clear();
   for (const n of nodes) {
     let geo; try { geo = C.localGeometry(n); } catch (e) { console.error(e); status('Geometry error: ' + e.message); continue; }
-    const mat = material(n); if (geo.userData.placeholder) { mat.transparent = true; mat.opacity = Math.min(mat.opacity, 0.5); }
+    const mat = material(n, geo); if (geo.userData.placeholder) { mat.transparent = true; mat.opacity = Math.min(mat.opacity, 0.5); }
     const m = new THREE.Mesh(geo, mat); m.userData.id = n.id; m.visible = !n.hidden;
     m.matrixAutoUpdate = false; m.matrix.copy(C.nodeMatrix(n)); m.matrixWorldNeedsUpdate = true;
     if (sel.includes(n.id)) { const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: '#1e6fd9' })); m.add(e); }
@@ -162,7 +168,7 @@ function renderProps(soft) {
   const num = (k, v, step = 1) => `<label>${k}<input data-k="${k}" type="number" step="${step}" value="${+(+v).toFixed(3)}"></label>`;
   let h = `<div><b>${s.length > 1 ? s.length + ' shapes' : n.name}</b>${n.locked ? ' 🔒' : ''}</div>
   <div class="row"><button data-x="solid" class="${!n.hole ? 'on' : ''}">Solid</button><button data-x="hole" class="${n.hole ? 'on' : ''}">Hole</button></div>
-  <label>Color<input type="color" data-x="color" value="${n.color}"></label>`;
+  <label>Color<input type="color" data-x="color" value="${n.color}"></label>${s.some(x => x.type === 'group') ? `<label title="Keep the colours of the grouped shapes">Multicolor<input type="checkbox" data-x="multicolor" ${n.multicolor ? 'checked' : ''}></label>` : ''}`;
   if (s.length === 1) {
     h += `<h4>Position (mm)</h4>${num('X', n.pos[0])}${num('Y', n.pos[1])}${num('Z', n.pos[2])}
     <h4>Size (mm)</h4>${(ls => num('W', ls[0]) + num('D', ls[1]) + num('H', ls[2]))(C.localSize(n))}
@@ -176,7 +182,8 @@ function renderProps(soft) {
 }
 $('#propbody').addEventListener('change', e => {
   const t = e.target, s = selected(); if (!s.length) return; const n = s[0];
-  if (t.dataset.x === 'color') { commit(); s.forEach(x => (x.color = t.value)); return rebuild(); }
+  if (t.dataset.x === 'color') { commit(); s.forEach(x => { x.color = t.value; x.multicolor = false; }); return rebuild(); }
+  if (t.dataset.x === 'multicolor') { commit(); s.forEach(x => { if (x.type === 'group') x.multicolor = t.checked; }); return rebuild(); }
   if (t.dataset.p) { commit(); n.params[t.dataset.p] = t.dataset.p === 'text' ? t.value : Math.max(0.01, +t.value); return rebuild(); }
   const k = t.dataset.k; if (!k) return; const v = +t.value; commit();
   if (k === 'X' || k === 'Y' || k === 'Z') n.pos['XYZ'.indexOf(k)] = v;
@@ -449,10 +456,29 @@ function editRulerLabel(i, el) {
 }
 
 // ---------- settings / clipboard (filled in later) ----------
-let settings = {};
-function applySettings(s) { settings = { ...settings, ...s }; setWorkplane(settings.workplane ? new THREE.Matrix4().fromArray(settings.workplane) : new THREE.Matrix4()); }
-function copySel() {}
-function paste() {}
+const loadDefaults = () => { try { return { ...C.DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('localcad.settings') || '{}') }; } catch { return { ...C.DEFAULT_SETTINGS }; } };
+let settings = loadDefaults();
+function applySettings(s) { settings = { ...settings, ...s }; buildPlate(settings); setWorkplane(settings.workplane ? new THREE.Matrix4().fromArray(settings.workplane) : new THREE.Matrix4()); }
+let clip = [], pasteCount = 0;
+function copySel() { const s = selected(); if (!s.length) return; clip = s.map(n => structuredClone(n)); pasteCount = 0; status(`Copied ${s.length} shape${s.length > 1 ? 's' : ''}`); }
+function paste() {
+  if (!clip.length) return status('Clipboard is empty'); commit(); pasteCount++;
+  const off = wpDir(new THREE.Vector3(10 * pasteCount, 10 * pasteCount, 0)).toArray(); const out = C.pasteNodes(clip, off);
+  nodes.push(...out); sel = out.map(n => n.id); rebuild(); status(`Pasted ${out.length} shape${out.length > 1 ? 's' : ''}`);
+}
+// workplane / grid settings dialog
+function openSettings() {
+  const dlg = $('#settings'); for (const k of ['plateW', 'plateD', 'grid', 'major']) dlg.querySelector(`[name=${k}]`).value = settings[k]; dlg.style.display = 'flex';
+  dlg.querySelector('[name=plateW]').focus();
+}
+$('#settings').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') $('#settings').style.display = 'none'; if (e.key === 'Enter') $('#settingsOk').click(); });
+$('#settingsCancel').onclick = () => ($('#settings').style.display = 'none');
+$('#settingsOk').onclick = () => {
+  const dlg = $('#settings'), v = k => Math.max(k === 'grid' || k === 'major' ? 0.1 : 10, Math.min(5000, parseFloat(dlg.querySelector(`[name=${k}]`).value) || C.DEFAULT_SETTINGS[k]));
+  const s = { plateW: v('plateW'), plateD: v('plateD'), grid: v('grid'), major: v('major') }; applySettings(s); setDirty(true);
+  if (dlg.querySelector('[name=asDefault]').checked) localStorage.setItem('localcad.settings', JSON.stringify(s)); dlg.style.display = 'none'; status(`Workplane ${s.plateW} × ${s.plateD} mm, grid ${s.grid} mm`);
+};
+applySettings({});
 
 // ---------- files ----------
 const native = window.native || { save: async o => { const b = new Blob([o.data]); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = o.name; a.click(); return o.name; },
@@ -472,11 +498,11 @@ async function importMesh() { const f = await native.open(['stl', 'obj']); if (!
   commit(); const n = C.meshNodeFromPositions(f.name.replace(/\.\w+$/, ''), pos); nodes.push(n); sel = [n.id]; rebuild(); fit(); }
 async function exportFile(kind) { const s = selected().length ? selected() : nodes; if (!s.filter(n => !n.hole).length) return alert('Nothing solid to export');
   const p = kind === 'stl' ? await native.save({ data: C.syncCSG(() => C.toSTL(s)), kind: 'stl', name: 'design.stl', binary: true }) : await native.save({ data: C.syncCSG(() => C.toOBJ(s)), kind: 'obj', name: 'design.obj' }); if (p) status('Exported ' + p); }
-async function newDoc() { if (!(await okToDiscard())) return; resetHistory(); nodes = []; sel = []; filePath = null; setDirty(false); rebuild(); home(); }
+async function newDoc() { if (!(await okToDiscard())) return; resetHistory(); nodes = []; sel = []; filePath = null; applySettings({ ...loadDefaults(), workplane: null }); setDirty(false); rebuild(); home(); }
 function inField() { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT'); }
 function toggleLock() { if (!sel.length) return; commit(); const l = !selected().every(n => n.locked); selected().forEach(n => (n.locked = l)); rebuild(); }
 function selectAll() { if (inField()) return document.execCommand('selectAll'); sel = nodes.filter(n => !n.hidden).map(n => n.id); rebuild(); }
-const actions = { workplane: () => startPick('workplane'), ruler: () => toggleRuler(), new: newDoc, open, save, saveas: saveAs, 'save-and-close': async () => { if (await save()) native.closeNow(); }, lock: toggleLock, hide, showall: showAll, selectall: selectAll,
+const actions = { settings: openSettings, workplane: () => startPick('workplane'), ruler: () => toggleRuler(), new: newDoc, open, save, saveas: saveAs, 'save-and-close': async () => { if (await save()) native.closeNow(); }, lock: toggleLock, hide, showall: showAll, selectall: selectAll,
   copy: () => (inField() ? document.execCommand('copy') : copySel()), cut: () => (inField() ? document.execCommand('cut') : (copySel(), del())), paste: () => (inField() ? document.execCommand('paste') : paste()),
   import: importMesh, exportstl: () => exportFile('stl'), exportobj: () => exportFile('obj'), undo, redo, duplicate, delete: del, group, ungroup };
 native.onMenu(c => actions[c] && actions[c]());
@@ -525,6 +551,12 @@ window.__smoke = async () => { try {
   startPick('workplane'); const [ex, ey] = toScreen(new THREE.Vector3(150, 150, 0)); ev('pointerdown', ex, ey); ev('pointerup', ex, ey, window); const wpReset = isDefaultWP();
   // ruler at origin, select the box moved to x=30 -> ruler X distance = 20
   nodes[0].pos = [30, 0, 0]; sel = [nodes[0].id]; rebuild(); placeRuler(new THREE.Vector3(0, 0, 0)); rulerKey = ''; updateRulerLabels(); const rulerText = rLabels[0].textContent; toggleRuler();
+  // copy/paste + multicolour + plate settings
+  resetHistory(); nodes = [C.makeNode('box'), C.makeNode('box')]; nodes[1].pos = [15, 0, 0]; nodes[1].color = '#0000ff'; sel = nodes.map(n => n.id); rebuild();
+  copySel(); paste(); const pasted = nodes.length === 4 && sel.length === 2 && !sel.includes(nodes[0].id); undo(); sel = nodes.map(n => n.id); group();
+  nodes[0].multicolor = true; rebuild(); await whenCsgIdle(); const mm = meshes.get(nodes[0].id); const mcOk = !!(mm.geometry.attributes.color && mm.material.vertexColors);
+  applySettings({ plateW: 300, plateD: 150 }); const plateOk = plate.scale.x === 300 && plate.scale.y === 150; applySettings({ ...C.DEFAULT_SETTINGS });
+  const item7 = pasted && mcOk && plateOk;
   const wpOk = Math.abs(wpZ - 20) < 1e-3 && wpReset && rulerText === 'X 20 mm';
   // rotation arrow drag (Z): sweep ~30° around the centre -> snaps to 22.5°
   resetHistory(); nodes = [C.makeNode('box')]; sel = [nodes[0].id]; rebuild(); tickHandles(); renderer.render(scene, camera);
@@ -540,7 +572,7 @@ window.__smoke = async () => { try {
   const mw1 = C.bbox(nodes).getSize(new THREE.Vector3()).x; const multiOk = mGrab && Math.abs(mw1 - mw0 - 10) < 1.01;
   const dirtyTitle = document.title.includes('•'); filePath = '/tmp/localcad-smoke.lcad'; await save(); const savedTitle = document.title;
   const px = renderer.domElement.toDataURL().length;
-  return { ok: wpOk && rotOk && multiOk && wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && afterUndoCount === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, wpOk, wpZ, wpReset, rulerText, rotOk, rotZ, multiOk, mw0, mw1, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
+  return { ok: item7 && wpOk && rotOk && multiOk && wasAsync && fromWorker && !dirtyStart && dirtyTitle && savedTitle === 'localcad-smoke.lcad — LocalCAD' && selRestored && afterUndoCount === 1 && n === 2 && v > 0 && v < 8000 && stl.length > 84 && px > 1000 && grabbed && Math.abs(w1 - w0 - 10) < 1.01 && labelsShown >= 3, grabbed, w0, w1, labelsShown, pasted, mcOk, plateOk, wpOk, wpZ, wpReset, rulerText, rotOk, rotZ, multiOk, mw0, mw1, selRestored, wasAsync, fromWorker, dirtyTitle, savedTitle, volume: v, nodesAfterUngroup: n, stlBytes: stl.length, canvasDataUrlLen: px };
 } catch (e) { return { ok: false, error: String(e.stack || e) }; } };
 // deterministic scene for screenshots: one rotated box with handles, fixed camera
 window.__shotScene = () => { nodes = [C.makeNode('box')]; nodes[0].rot = [0, 0, 30]; sel = [nodes[0].id]; setMode('handles'); rebuild(); home(); orbit.update(); tickHandles(); updateRulerLabels(); renderer.render(scene, camera); return true; };

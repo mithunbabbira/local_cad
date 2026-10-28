@@ -32,7 +32,7 @@ export function makeNode(type, extra = {}) {
 
 function clean(g) { // normalise: non-indexed, position+normal only
   g = g.index ? g.toNonIndexed() : g;
-  for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k);
+  for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'color') g.deleteAttribute(k);
   g.computeVertexNormals(); return g;
 }
 function zUp(g, baseAtZero = true) { // three primitives are Y-up; LocalCAD is Z-up
@@ -106,6 +106,10 @@ const round = v => Math.round(v * 1e4) / 1e4;
 function bake(g, m) { g = g.clone(); g.applyMatrix4(m); if (m.determinant() < 0) flip(g); else g.computeVertexNormals(); return g; }
 
 const evaluator = new Evaluator(); evaluator.attributes = ['position', 'normal']; evaluator.useGroups = false;
+const evaluatorC = new Evaluator(); evaluatorC.attributes = ['position', 'normal', 'color']; evaluatorC.useGroups = false;
+/** Give a baked geometry a per-vertex colour (keeps an existing one from a nested multicolour group). */
+function paint(g, hex, keep) { if (keep && g.attributes.color) return g; const c = new THREE.Color(hex), n = g.attributes.position.count, a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; } g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; }
 // Geometry cache keyed by *shape content* (type+params, or group structure), not by object identity.
 // Small LRU so long sessions don't grow memory without bound.
 const cache = new Map(); const CACHE_MAX = 400;
@@ -117,11 +121,11 @@ const mkey = n => n.pos.join(',') + '|' + n.rot.join(',') + '|' + n.scale.join('
 export function geoKey(n) {
   if (n.type === 'mesh') return 'mesh:' + (n.params.hash || (n.params.hash = hashPositions(meshPositions(n))));
   if (n.type !== 'group') return n.type + JSON.stringify(n.params);
-  return 'g(' + n.children.map(c => (c.hole ? 'H' : 'S') + geoKey(c) + '@' + mkey(c)).join(';') + ')';
+  return (n.multicolor ? 'gm(' : 'g(') + n.children.map(c => (c.hole ? 'H' : 'S') + geoKey(c) + '@' + mkey(c) + (n.multicolor ? c.color : '')).join(';') + ')';
 }
 /** Run fn with async CSG disabled (exports, measurements that must be exact). */
 export function syncCSG(fn) { const a = csgHooks.async; csgHooks.async = null; try { return fn(); } finally { csgHooks.async = a; } }
-export function geometryFromArrays(pos, nrm) { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); if (nrm && nrm.length) g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3)); else g.computeVertexNormals(); return g; }
+export function geometryFromArrays(pos, nrm, col) { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); if (col && col.length) g.setAttribute('color', new THREE.BufferAttribute(col, 3)); if (nrm && nrm.length) g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3)); else g.computeVertexNormals(); return g; }
 /** Optional async CSG hook (set by the app to offload groups to a Web Worker). */
 export const csgHooks = { async: null };
 /** Local-space geometry of a node (for groups: CSG of children, holes subtracted). */
@@ -132,14 +136,15 @@ export function localGeometry(n, opts = {}) {
   const g = computeGroup(n); cachePut(k, g); return g;
 }
 export function computeGroup(n) {
-  let solids = [], holes = [];
-  for (const c of n.children) (c.hole ? holes : solids).push(bake(localGeometry(c, { sync: true }), nodeMatrix(c)));
+  let solids = [], holes = []; const mc = !!n.multicolor, first = (n.children.find(c => !c.hole) || n.children[0] || {}).color || '#888888';
+  for (const c of n.children) { let g = bake(localGeometry(c, { sync: true }), nodeMatrix(c)); if (mc) g = paint(g, c.hole ? first : c.color, c.type === 'group' && c.multicolor && !c.hole); else if (g.attributes.color) g.deleteAttribute('color'); (c.hole ? holes : solids).push(g); }
   // A group made only of holes is itself a hole: keep the union of the holes as its shape.
   if (!solids.length) { solids = holes; holes = []; }
   if (!solids.length) return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([], 3));
   let acc = new Brush(solids[0]);
-  for (let i = 1; i < solids.length; i++) acc = evaluator.evaluate(acc, new Brush(solids[i]), ADDITION);
-  for (const h of holes) acc = evaluator.evaluate(acc, new Brush(h), SUBTRACTION);
+  const ev = mc ? evaluatorC : evaluator;
+  for (let i = 1; i < solids.length; i++) acc = ev.evaluate(acc, new Brush(solids[i]), ADDITION);
+  for (const h of holes) acc = ev.evaluate(acc, new Brush(h), SUBTRACTION);
   return clean(acc.geometry);
 }
 /** Cheap stand-in while a group's CSG is still computing: children merged without boolean ops. */
@@ -315,3 +320,9 @@ export function dropToFrame(nodes, frame) {
   return nodes.map(n => { const b = boxInFrame([n], frame); const zAxis = new THREE.Vector3().setFromMatrixColumn(frame, 2).normalize();
     const o = structuredClone(n); o.pos = n.pos.map((p, i) => round(p - zAxis.getComponent(i) * b.min.z)); return o; });
 }
+
+/** Clipboard: deep copies with fresh ids, offset by `offset` (world mm). */
+export function pasteNodes(clip, offset = [0, 0, 0]) {
+  return clip.map(n => { const c = cloneNode(n); c.pos = c.pos.map((p, i) => round(p + offset[i])); return c; });
+}
+export const DEFAULT_SETTINGS = { plateW: 200, plateD: 200, grid: 1, major: 10 };

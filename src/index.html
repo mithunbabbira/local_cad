@@ -11,7 +11,7 @@
  <span class="sep"></span>
  <button data-m="handles" class="on">Resize (Q)</button><button data-m="translate">Move (T)</button><button data-m="rotate">Rotate (E)</button><button data-m="scale">Scale</button>
  <span class="sep"></span>
- <button data-a="workplane" title="W">Workplane (W)</button><button data-a="ruler" title="R">Ruler (R)</button>
+ <button data-a="workplane" title="W">Workplane (W)</button><button data-a="ruler" title="R">Ruler (R)</button><button data-a="settings" title="Workplane and grid size">Grid…</button>
  <span class="sep"></span>
  Align: <button data-al="x">X</button><button data-al="y">Y</button><button data-al="z">Z</button>
  <span class="sep"></span>
@@ -24,4 +24,11 @@
 <div id="viewcube"></div>
 <aside id="props"><h3>Shape</h3><div id="propbody"><p class="hint">Nothing selected</p></div></aside>
 <footer id="status">Ready</footer>
+<div id="settings" class="modal" style="display:none"><div class="dlg"><h3>Workplane settings</h3>
+ <label>Plate width (mm)<input name="plateW" type="number" min="10" step="10"></label>
+ <label>Plate depth (mm)<input name="plateD" type="number" min="10" step="10"></label>
+ <label>Minor grid (mm)<input name="grid" type="number" min="0.1" step="0.5"></label>
+ <label>Major grid (mm)<input name="major" type="number" min="0.1" step="1"></label>
+ <label class="chk"><input name="asDefault" type="checkbox"> Use as default for new designs</label>
+ <div class="row"><button id="settingsCancel">Cancel</button><button id="settingsOk" class="on">OK</button></div></div></div>
 <script src="bundle.js"></script></body></html>
